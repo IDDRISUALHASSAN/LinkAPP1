@@ -4,14 +4,14 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function Home() {
-  const IP = '10.24.105.51:3000';
+  const IP = " 10.154.226.51:3000"; 
   const router = useRouter();
   const { userId: paramUserId } = useLocalSearchParams();
   const [userId, setuserId] = useState(paramUserId || "");
   const [isloading, setIsloading] = useState(true);
   const [otp, setotp] = useState('');
 
-  // ✅ Load userId (from params or AsyncStorage)
+  // Only store userId at first load
   useEffect(() => {
     const loadUserId = async () => {
       try {
@@ -56,9 +56,14 @@ export default function Home() {
       console.log("🔍 Sent OTP:", otp);
 
       if (data.success) {
+        // ✅ Save token and phone only after successful verification
+        await AsyncStorage.setItem("userToken", data.token);
+        await AsyncStorage.setItem("userId", data.user._id);
+        await AsyncStorage.setItem("phoneNumber", data.user.phone);
+
         Alert.alert("Success", "Verification successful!");
         router.replace("/home");   
-         } else {
+      } else {
         Alert.alert("Verification Failed", data.message || "Invalid OTP, please try again.");
       }
     } catch (error) {
@@ -97,33 +102,42 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  mainContainer: { flex: 1,
+  mainContainer: { 
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'white' },
-  container_2: { alignContent: 'center',
-     justifyContent: 'center',
-      alignItems: 'center', 
-      height: 400, width: 350, 
-      backgroundColor: '#8f9690ff', 
-      borderRadius: 8, 
-      padding: 20 },
-  header: { fontSize: 20, 
+    backgroundColor: 'white' 
+  },
+  container_2: { 
+    alignContent: 'center',
+    justifyContent: 'center',
+    alignItems: 'center', 
+    height: 400, 
+    width: 350, 
+    backgroundColor: '#8f9690ff', 
+    borderRadius: 8, 
+    padding: 20 
+  },
+  header: { 
+    fontSize: 20, 
     fontWeight: 'bold', 
-    marginBottom: 60 },
-  name: { alignSelf: "flex-start",
-     marginLeft: 50, 
-     marginTop: 20,
-      fontSize: 16, 
-      fontWeight: '500', 
-      color: '#060615ff'
-     },
-  NameInput: { padding: 10,
-     height: 40,
-      width: 250,
-       backgroundColor: '#c5ceddff', 
-       borderRadius: 10, 
-       color: '#060615ff',
-        marginBottom: 10 
-      }
+    marginBottom: 60 
+  },
+  name: { 
+    alignSelf: "flex-start",
+    marginLeft: 50, 
+    marginTop: 20,
+    fontSize: 16, 
+    fontWeight: '500', 
+    color: '#060615ff'
+  },
+  NameInput: { 
+    padding: 10,
+    height: 40,
+    width: 250,
+    backgroundColor: '#c5ceddff', 
+    borderRadius: 10, 
+    color: '#060615ff',
+    marginBottom: 10 
+  }
 });

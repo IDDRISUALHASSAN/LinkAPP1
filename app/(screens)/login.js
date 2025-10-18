@@ -13,7 +13,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 export default function Home() {
-  const IP = "10.24.105.51:3000"; // ✅ Your server
+const IP = "10.223.221.51:3000"; 
   const router = useRouter();
 
   const [isloading, setIsloading] = useState(true);
@@ -21,7 +21,7 @@ export default function Home() {
   const [password, setPassword] = useState("");
   const [loadingLogin, setLoadingLogin] = useState(false);
 
-  // ✅ Check saved session
+  
   useEffect(() => {
     const checkSession = async () => {
       const token = await AsyncStorage.getItem("token");
@@ -55,9 +55,12 @@ export default function Home() {
       } else {
         Alert.alert("Success", "Login successful 🎉");
 
-        // ✅ Save token + user info for Chat
+        
         await AsyncStorage.setItem("token", data.token);
         await AsyncStorage.setItem("phoneNumber", PhoneNumber);
+        console.log('token:', data.token);
+        console.log('phoneNumber:', PhoneNumber);
+        
 
         if (data.user?._id) {
           await AsyncStorage.setItem("userId", data.user._id);

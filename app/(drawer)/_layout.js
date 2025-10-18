@@ -50,7 +50,7 @@ export default function DrawerLayout() {
 
       {/* Settings */}
       <Drawer.Screen
-        name="settings"
+        name="setting"
         options={{
           drawerLabel: "Settings",
           title: "App Settings",

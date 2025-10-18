@@ -5,6 +5,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Image,
 } from "react-native";
 import React, { useState, useEffect } from "react";
 import { useRouter } from "expo-router";
@@ -12,7 +13,7 @@ import { useRouter } from "expo-router";
 export default function Contacts() {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const IP = "10.24.105.51:3000";
+  const IP = "10.223.221.51:3000";
   const router = useRouter();
 
   const getContacts = async () => {
@@ -24,7 +25,7 @@ export default function Contacts() {
         setContacts(data.users);
       }
     } catch (error) {
-      console.error("❌ Error fetching contacts:", error);
+      console.error(" Error fetching contacts:", error);
     } finally {
       setLoading(false);
     }
@@ -34,33 +35,60 @@ export default function Contacts() {
     getContacts();
   }, []);
 
+  const getProfileImage = (contact) => {
+    
+    if (
+      contact.profilePic &&
+      typeof contact.profilePic === "string" &&
+      contact.profilePic.startsWith("http")
+    ) {
+      return { uri: contact.profilePic };
+    } else {
+      return require("../../assets/images/avatar.png"); 
+    }
+  };
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>All Contacts</Text>
 
       {loading ? (
-        <ActivityIndicator size="large" color="#05a31dff" style={{ marginTop: 20 }} />
+        <ActivityIndicator
+          size="large"
+          color="#05a31dff"
+          style={{ marginTop: 20 }}
+        />
       ) : (
         <ScrollView style={styles.scroll}>
-          {contacts.map((contact, index) => (
-            <TouchableOpacity
-              key={index}
-              style={styles.card}
-              // ✅ Pass params the expo-router way
-              onPress={() =>
-                router.push({
-                  pathname: "/chat",
-                  params: {
-                    receiverId: contact.PhoneNumber,
-                    receiverName: contact.name,
-                  },
-                })
-              }
-            >
-              <Text style={styles.name}>{contact.name}</Text>
-              <Text style={styles.phone}>{contact.PhoneNumber}</Text>
-            </TouchableOpacity>
-          ))}
+          {contacts.length === 0 ? (
+            <Text style={styles.emptyText}>No contacts found.</Text>
+          ) : (
+            contacts.map((contact, index) => (
+              <TouchableOpacity
+                key={index}
+                style={styles.card}
+                onPress={() =>
+                  router.push({
+                    pathname: "../chatfiles/chat",
+                    params: {
+                      receiverId: contact.PhoneNumber,
+                      receiverName: contact.name,
+                      profilePic: contact.profilePic,
+                    },
+                  })
+                }
+              >
+                {/* ✅ Profile Picture (shows only if valid URL) */}
+                <Image source={getProfileImage(contact)} style={styles.avatar} />
+
+                {/* Name + Phone */}
+                <View style={styles.info}>
+                  <Text style={styles.name}>{contact.name}</Text>
+                  <Text style={styles.phone}>{contact.PhoneNumber}</Text>
+                </View>
+              </TouchableOpacity>
+            ))
+          )}
         </ScrollView>
       )}
     </View>
@@ -77,11 +105,32 @@ const styles = StyleSheet.create({
   },
   scroll: { paddingHorizontal: 15 },
   card: {
-    backgroundColor: "#f2f2f2",
-    padding: 15,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#f9f9f9",
+    padding: 12,
     borderRadius: 10,
     marginBottom: 10,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 1 },
+    shadowRadius: 2,
   },
-  name: { fontSize: 18, fontWeight: "bold" },
-  phone: { fontSize: 16, color: "gray" },
+  avatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    marginRight: 15,
+    backgroundColor: "#ddd",
+  },
+  info: { flex: 1 },
+  name: { fontSize: 17, fontWeight: "600", color: "#222" },
+  phone: { fontSize: 14, color: "gray", marginTop: 3 },
+  emptyText: {
+    textAlign: "center",
+    color: "gray",
+    marginTop: 30,
+    fontSize: 16,
+  },
 });
