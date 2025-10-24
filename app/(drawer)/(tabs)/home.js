@@ -10,8 +10,7 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter, useFocusEffect } from "expo-router";
 
-const API = "http://10.223.221.51:3000";
-
+  const IP = "10.176.143.51:3000";
 export default function Conversations() {
   const [conversations, setConversations] = useState([]);
   const router = useRouter();
@@ -19,10 +18,24 @@ export default function Conversations() {
   // 🔹 Fetch conversations
   const loadConversations = async () => {
     try {
-      const phone = await AsyncStorage.getItem("phoneNumber");
+      // read stored value and try to parse (handles both raw strings and JSON)
+      const stored = await AsyncStorage.getItem("phoneNumber");
+      let phone = null;
+      if (stored) {
+        try {
+          phone = JSON.parse(stored);
+        } catch (e) {
+          phone = stored;
+        }
+      }
       if (!phone) return;
 
-      const res = await fetch(`${API}/conversations/${phone}`);
+      const url = `http://${IP}/conversations/${encodeURIComponent(phone)}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        console.log("Failed to fetch conversations:", res.status);
+        return;
+      }
       const data = await res.json();
 
       if (data.success) {

@@ -13,7 +13,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
 export default function Home() {
-const IP = "10.223.221.51:3000"; 
+const IP = "10.176.143.51:3000"; 
   const router = useRouter();
 
   const [isloading, setIsloading] = useState(true);

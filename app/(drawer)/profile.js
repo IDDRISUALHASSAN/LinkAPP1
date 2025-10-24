@@ -13,7 +13,7 @@ import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 
-const API = "http://10.223.221.51:3000";
+const API = "http://10.176.143.51:3000";
 
 export default function Profile() {
   const [user, setUser] = useState(null);

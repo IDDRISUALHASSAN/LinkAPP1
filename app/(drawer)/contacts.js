@@ -13,7 +13,7 @@ import { useRouter } from "expo-router";
 export default function Contacts() {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const IP = "10.223.221.51:3000";
+  const IP = "10.176.143.51:3000";
   const router = useRouter();
 
   const getContacts = async () => {

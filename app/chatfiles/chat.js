@@ -11,380 +11,344 @@ import {
   Alert,
   Animated,
   Pressable,
+  Linking,
   Image,
+  ActivityIndicator,
 } from "react-native";
 import { io } from "socket.io-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams } from "expo-router";
+import * as DocumentPicker from "expo-document-picker";
+import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system";
+import { Video, Audio } from "expo-av";
 
 export default function Chat() {
   const { receiverId, receiverName, profilePic } = useLocalSearchParams();
-  const IP = "10.223.221.51:3000";
+  const IP = "10.176.143.51:3000";
 
   const [socket, setSocket] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [userId, setUserId] = useState(null);
-  const [isTyping, setIsTyping] = useState(false);
-  const [lastAnimatedIndex, setLastAnimatedIndex] = useState(-1);
+  const [uploading, setUploading] = useState(false);
+  const [previewFile, setPreviewFile] = useState(null);
+  const [previewMeta, setPreviewMeta] = useState(null);
 
-  const shakeAnim = useRef(new Animated.Value(0)).current;
   const flatListRef = useRef(null);
 
-  // Checks content-type before parsing JSON to avoid "Unexpected character: <"
-  const safeFetch = async (url, options = {}) => {
-    const res = await fetch(url, options);
-    const contentType = res.headers.get("content-type") || "";
-
-    // If non-OK, return text or json for debugging
-    if (!res.ok) {
-      const body = contentType.includes("application/json")
-        ? await res.json()
-        : await res.text();
-      console.warn("safeFetch non-OK response:", res.status, body);
-      throw { status: res.status, body };
-    }
-
-    if (contentType.includes("application/json")) return res.json();
-    return res.text();
+  // detect file type by extension
+  const guessMimeTypeFromName = (name) => {
+    if (!name) return "application/octet-stream";
+    const ext = name.split(".").pop().toLowerCase();
+    const map = {
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      gif: "image/gif",
+      webp: "image/webp",
+      pdf: "application/pdf",
+      txt: "text/plain",
+      doc: "application/msword",
+      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ppt: "application/vnd.ms-powerpoint",
+      pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      xls: "application/vnd.ms-excel",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      mp4: "video/mp4",
+      mov: "video/quicktime",
+      mp3: "audio/mpeg",
+      m4a: "audio/mp4",
+      wav: "audio/wav",
+    };
+    return map[ext] || "application/octet-stream";
   };
 
+  const getLocalPath = async (uri) => {
+    if (!uri.startsWith("content://")) return uri;
+    const newPath = `${FileSystem.cacheDirectory}${Date.now()}.tmp`;
+    await FileSystem.copyAsync({ from: uri, to: newPath });
+    return newPath;
+  };
+
+  // 📸 Pick image or video
+  const pickImage = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        quality: 0.7,
+      });
+      if (!result.canceled && result.assets?.length > 0) {
+        const asset = result.assets[0];
+        const uri = await getLocalPath(asset.uri);
+        const name = asset.fileName || uri.split("/").pop();
+        const type = asset.type === "video" ? "video/mp4" : "image/jpeg";
+        setPreviewFile(uri);
+        setPreviewMeta({ name, type });
+      }
+    } catch (err) {
+      console.error("pickImage error:", err);
+      Alert.alert("Error", "Could not pick image or video.");
+    }
+  };
+
+  // 📎 Pick document/audio/other
+  const pickDocument = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "*/*",
+        copyToCacheDirectory: true,
+      });
+
+      const file = result.assets?.[0] || result;
+      if (file && file.uri && file.type !== "cancel") {
+        const uri = await getLocalPath(file.uri);
+        const name = file.name || uri.split("/").pop();
+        const type = file.mimeType || guessMimeTypeFromName(name);
+        setPreviewFile(uri);
+        setPreviewMeta({ name, type });
+      }
+    } catch (err) {
+      console.error("pickDocument error:", err);
+      Alert.alert("Error", "Could not pick file.");
+    }
+  };
+
+  // 🚀 Upload file
+  const sendFile = async (fileUri, meta) => {
+    try {
+      setUploading(true);
+      const token = await AsyncStorage.getItem("token");
+
+      const name = meta.name || fileUri.split("/").pop();
+      const type = meta.type || guessMimeTypeFromName(name);
+      const formData = new FormData();
+
+      formData.append("from", userId);
+      formData.append("to", receiverId);
+      formData.append("file", { uri: fileUri, name, type });
+
+      const res = await fetch(`http://${IP}/messages/send-file`, {
+        method: "POST",
+        headers: { "Content-Type": "multipart/form-data", Authorization: token ? `Bearer ${token}` : "" },
+        body: formData,
+      });
+
+      const data = await res.json();
+      console.log("sendFile response:", data);
+
+      if (data.success) {
+        socket?.emit("message", data.message);
+        setMessages((prev) => [...prev, data.message]);
+        setPreviewFile(null);
+        setPreviewMeta(null);
+      } else {
+        Alert.alert("Upload failed", data.message || "Unknown error");
+      }
+    } catch (err) {
+      console.error("sendFile error:", err);
+      Alert.alert("Upload failed", err.message || "Error uploading file");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // 🔌 Socket setup
   useEffect(() => {
     const loadUser = async () => {
-      try {
-        const storedPhone = await AsyncStorage.getItem("phoneNumber");
-        if (storedPhone) {
-          setUserId(storedPhone);
-          console.log("Loaded phoneNumber from storage:", storedPhone);
-        } else {
-          Alert.alert("Error", "User not logged in properly.");
-          console.warn("phoneNumber missing in AsyncStorage");
-        }
-      } catch (err) {
-        console.error("AsyncStorage error:", err);
-      }
+      const storedPhone = await AsyncStorage.getItem("phoneNumber");
+      if (storedPhone) setUserId(storedPhone);
     };
     loadUser();
   }, []);
 
   useEffect(() => {
-    if (!userId) return;
-    if (!receiverId) {
-      console.warn(
-        "No receiverId provided — skipping socket connect until params exist"
-      );
-      return;
-    }
-
+    if (!userId || !receiverId) return;
     const newSocket = io(`http://${IP}`, { transports: ["websocket"] });
     setSocket(newSocket);
-
-    console.log("Socket connecting, login emit:", userId);
     newSocket.emit("login", userId);
     newSocket.emit("loadHistory", { from: userId, to: receiverId });
 
     newSocket.on("history", (history) => {
-      console.log(
-        "history received:",
-        Array.isArray(history) ? history.length : typeof history
-      );
       setMessages(history || []);
-      setLastAnimatedIndex((history && history.length - 1) || -1);
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
     });
 
     newSocket.on("message", (msg) => {
-      console.log("socket message received:", msg && msg._id ? msg._id : msg);
       setMessages((prev) => [...prev, msg]);
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
     });
 
-    newSocket.on("typing", (payload) => {
-      setIsTyping(true);
-      setTimeout(() => setIsTyping(false), 1500);
-    });
-
-    newSocket.on("messagesRead", (payload) => {
-      console.log("messagesRead event:", payload);
-    });
-
-    const markRead = async () => {
-      try {
-        const token = await AsyncStorage.getItem("token");
-        // use safeFetch to avoid JSON parsing errors for non-json responses
-        const data = await safeFetch(`http://${IP}/messages/mark-read`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: token ? `Bearer ${token}` : undefined,
-          },
-          body: JSON.stringify({ from: receiverId, to: userId }),
-        });
-
-        if (data && data.success) {
-          console.log("Marked read:", data.modifiedCount);
-          newSocket?.emit("messagesRead", { from: receiverId, to: userId });
-        } else {
-          console.warn("mark-read response:", data);
-        }
-      } catch (err) {
-        console.warn("mark-read failed:", err);
-      }
-    };
-    markRead();
-
-    return () => {
-      newSocket.disconnect();
-      setSocket(null);
-    };
-    // We only want to re-run this effect when userId or receiverId change
+    return () => newSocket.disconnect();
   }, [userId, receiverId]);
 
-  const triggerShake = () => {
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 6, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -6, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
-    ]).start();
-  };
-
   const sendMessage = () => {
-    if (!input.trim() || !socket || !userId) {
-      triggerShake();
-      return;
-    }
-
+    if (!input.trim() || !socket || !userId) return;
     const msg = {
       from: userId,
       to: receiverId,
       text: input.trim(),
       timestamp: new Date().toISOString(),
     };
-
     socket.emit("message", msg);
     setMessages((prev) => [...prev, msg]);
     setInput("");
-    setLastAnimatedIndex((prev) => prev + 1);
-    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
   };
 
-  const deleteMessage = async (id) => {
-    try {
-      const token = await AsyncStorage.getItem("token");
-      if (!token) {
-        Alert.alert("Error", "Not authenticated. Please log in again.");
-        return;
-      }
-      const data = await safeFetch(`http://${IP}/messages/${id}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
+  const AudioPlayer = ({ uri }) => {
+    const [sound, setSound] = useState(null);
+    const [playing, setPlaying] = useState(false);
 
-      console.log("deleteMessage response:", data);
-      if (data && data.success) {
-        setMessages((prev) => prev.filter((msg) => msg._id !== id));
+    const togglePlay = async () => {
+      if (!sound) {
+        const { sound: newSound } = await Audio.Sound.createAsync({ uri });
+        setSound(newSound);
+        await newSound.playAsync();
+        setPlaying(true);
+        newSound.setOnPlaybackStatusUpdate((status) => {
+          if (status.didJustFinish) setPlaying(false);
+        });
       } else {
-        Alert.alert("Delete failed", (data && data.message) || "Unknown error");
+        const status = await sound.getStatusAsync();
+        if (status.isPlaying) {
+          await sound.pauseAsync();
+          setPlaying(false);
+        } else {
+          await sound.playAsync();
+          setPlaying(true);
+        }
       }
-    } catch (err) {
-      console.error("Error deleting:", err);
-      if (err && err.body) {
-        const text = typeof err.body === "string" ? err.body : JSON.stringify(err.body);
-        Alert.alert("Delete error", text);
-      } else {
-        Alert.alert("Delete error", "Check console for details");
-      }
-    }
-  };
-
-  const AnimatedMessage = ({ item, isMine, index }) => {
-    const fadeAnim = useRef(new Animated.Value(0)).current;
-    const slideAnim = useRef(new Animated.Value(20)).current;
+    };
 
     useEffect(() => {
-      if (index > lastAnimatedIndex) {
-        Animated.parallel([
-          Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
-          Animated.timing(slideAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
-        ]).start();
-        setLastAnimatedIndex(index);
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    const animatedStyle =
-      index > lastAnimatedIndex ? { opacity: fadeAnim, transform: [{ translateY: slideAnim }] } : {};
+      return sound ? () => sound.unloadAsync() : undefined;
+    }, [sound]);
 
     return (
-      <Animated.View style={animatedStyle}>
-        <Pressable
-          onLongPress={() =>
-            Alert.alert("Delete", "Do you want to delete this message?", [
-              { text: "Cancel", style: "cancel" },
-              { text: "Delete", style: "destructive", onPress: () => deleteMessage(item._id) },
-            ])
-          }
-          delayLongPress={400}
-        >
-          <View style={[styles.messageBox, isMine ? styles.myMessage : styles.theirMessage]}>
-            <Text style={styles.messageText}>{item.text}</Text>
-            <Text style={styles.timestamp}>
-              {new Date(item.timestamp || item.createdAt).toLocaleTimeString()}
-            </Text>
-          </View>
-        </Pressable>
-      </Animated.View>
+      <TouchableOpacity onPress={togglePlay} style={{ padding: 10, backgroundColor: "#ddd", borderRadius: 8 }}>
+        <Text>{playing ? "⏸️ Pause" : "▶️ Play Audio"}</Text>
+      </TouchableOpacity>
     );
   };
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      keyboardVerticalOffset={90}
-    >
-      <View style={styles.headerContainer}>
-  {profilePic ? (
-    <Image
-      source={{ uri: profilePic }}
-      style={styles.profilePic}
-    />
-  ) : (
-    <Image
-      source={require("../../assets/images/avatar.png")} // make sure you have an avatar image
-      style={styles.profilePic}
-    />
-  )}
-  <View>
-    <Text style={styles.receiverName}>{receiverName || "User"}</Text>
-    <Text style={styles.receiverStatus}>Online</Text>
-  </View>
-</View>
-
-
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(item, index) => item._id || index.toString()}
-        renderItem={({ item, index }) => (
-          <AnimatedMessage item={item} isMine={item.from === userId} index={index} />
+  const AnimatedMessage = ({ item, isMine }) => (
+    <Pressable>
+      <View style={[styles.messageBox, isMine ? styles.myMessage : styles.theirMessage]}>
+        {item.fileUrl ? (
+          item.fileUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
+            <Image source={{ uri: item.fileUrl }} style={{ width: 200, height: 200, borderRadius: 8 }} resizeMode="cover" />
+          ) : item.fileUrl.match(/\.(mp4|mov)$/i) ? (
+            <Video source={{ uri: item.fileUrl }} style={{ width: 200, height: 180, borderRadius: 8 }} useNativeControls resizeMode="contain" />
+          ) : item.fileUrl.match(/\.(mp3|m4a|wav)$/i) ? (
+            <AudioPlayer uri={item.fileUrl} />
+          ) : (
+            <TouchableOpacity onPress={() => Linking.openURL(item.fileUrl)} style={{ padding: 8, backgroundColor: "#eee", borderRadius: 8 }}>
+              <Text style={{ color: "#333" }}>📎 {item.fileName || "View file"}</Text>
+            </TouchableOpacity>
+          )
+        ) : (
+          <Text style={styles.messageText}>{item.text}</Text>
         )}
-        contentContainerStyle={{ paddingBottom: 10 }}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-        onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
-      />
-
-      {isTyping && <Text style={styles.typingIndicator}>{`${receiverName || "User"} is typing...`}</Text>}
-
-      <View style={styles.inputContainer}>
-        <Animated.View style={{ transform: [{ translateX: shakeAnim }], flex: 1 }}>
-          <TextInput
-            style={styles.textInput}
-            value={input}
-            onChangeText={(text) => {
-              setInput(text);
-              socket?.emit("typing", receiverId);
-            }}
-            placeholder="Type a message..."
-            returnKeyType="send"
-            onSubmitEditing={sendMessage}
-          />
-        </Animated.View>
-        <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
-          <Text style={styles.sendText}>👉</Text>
-        </TouchableOpacity>
+        <Text style={styles.timestamp}>{new Date(item.timestamp || item.createdAt).toLocaleTimeString()}</Text>
       </View>
-    </KeyboardAvoidingView>
+    </Pressable>
+  );
+
+  return (
+    <>
+      {previewFile && (
+        <View style={styles.previewOverlay}>
+          {previewMeta?.type?.startsWith("image/") ? (
+            <Image source={{ uri: previewFile }} style={{ width: 220, height: 220, borderRadius: 10 }} resizeMode="cover" />
+          ) : previewMeta?.type?.startsWith("video/") ? (
+            <Video source={{ uri: previewFile }} style={{ width: 250, height: 200 }} useNativeControls resizeMode="contain" />
+          ) : previewMeta?.type?.startsWith("audio/") ? (
+            <AudioPlayer uri={previewFile} />
+          ) : (
+            <Text style={{ fontSize: 16, marginBottom: 10, color: "#fff" }}>📄 {previewMeta?.name}</Text>
+          )}
+
+          {uploading ? (
+            <ActivityIndicator size="large" color="#fff" style={{ marginTop: 20 }} />
+          ) : (
+            <View style={{ flexDirection: "row", marginTop: 20 }}>
+              <TouchableOpacity
+                onPress={() => sendFile(previewFile, previewMeta)}
+                style={{ backgroundColor: "#4CAF50", paddingVertical: 10, paddingHorizontal: 20, borderRadius: 8, marginHorizontal: 10 }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "600" }}>Send</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  setPreviewFile(null);
+                  setPreviewMeta(null);
+                }}
+                style={{ backgroundColor: "#f44336", paddingVertical: 10, paddingHorizontal: 20, borderRadius: 8, marginHorizontal: 10 }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "600" }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      )}
+
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={90}>
+        <View style={styles.headerContainer}>
+          <Image source={profilePic ? { uri: profilePic } : require("../../assets/images/avatar.png")} style={styles.profilePic} />
+          <View>
+            <Text style={styles.receiverName}>{receiverName || "User"}</Text>
+            <Text style={styles.receiverStatus}>Online</Text>
+          </View>
+        </View>
+
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          keyExtractor={(item, index) => item?._id || index.toString()}
+          renderItem={({ item }) => <AnimatedMessage item={item} isMine={item.from === userId} />}
+          contentContainerStyle={{ paddingBottom: 10 }}
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+        />
+
+        <View style={styles.inputContainer}>
+          <TextInput style={styles.textInput} value={input} onChangeText={setInput} placeholder="Type a message..." />
+          <TouchableOpacity style={styles.iconButton} onPress={pickImage}>
+            <Text style={{ fontSize: 22 }}>🖼️</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconButton} onPress={pickDocument}>
+            <Text style={{ fontSize: 22 }}>📎</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
+            <Text style={styles.sendText}>👉</Text>
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f0f4f8" },
-  header: {
-    fontSize: 20,
-    fontWeight: "600",
-    paddingVertical: 18,
-    color: "#fff",
-    textAlign: "center",
-    elevation: 4,
-    paddingHorizontal: 12,
-  },
-  /* added headerContainer and profile/receiver styles used in JSX */
-  headerContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "#6a22b1ff",
-  },
-  profilePic: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    marginRight: 10,
-    backgroundColor: "#ddd",
-  },
-  receiverName: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  receiverStatus: {
-    color: "#e6e6e6",
-    fontSize: 12,
-  },
-  typingIndicator: {
-    fontStyle: "italic",
-    color: "#555",
-    textAlign: "center",
-    marginBottom: 6,
-  },
-  messageBox: {
-    maxWidth: "75%",
-    marginVertical: 6,
-    marginHorizontal: 12,
-    padding: 12,
-    borderRadius: 16,
-    shadowColor: "#413c3cff",
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  myMessage: { backgroundColor: "#6a22b1ff", alignSelf: "flex-end" },
+  headerContainer: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 10, backgroundColor: "#6a22b1ff" },
+  profilePic: { width: 44, height: 44, borderRadius: 22, marginRight: 10 },
+  receiverName: { color: "#fff", fontSize: 16, fontWeight: "600" },
+  receiverStatus: { color: "#e6e6e6", fontSize: 12 },
+  messageBox: { maxWidth: "75%", marginVertical: 6, marginHorizontal: 12, padding: 12, borderRadius: 16 },
+  myMessage: { backgroundColor: "#30ae34ff", alignSelf: "flex-end" },
   theirMessage: { backgroundColor: "#9e4d4dff", alignSelf: "flex-start" },
   messageText: { fontSize: 16, color: "#fff" },
   timestamp: { fontSize: 11, color: "#d1d1d1", marginTop: 4, textAlign: "right" },
-  inputContainer: {
-    flexDirection: "row",
-    padding: 12,
-    borderTopWidth: 1,
-    borderColor: "#ccc",
-    backgroundColor: "#fff",
-    alignItems: "center",
-  },
-  textInput: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: "#bbb",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    backgroundColor: "#fff",
-    fontSize: 16,
-  },
-  sendButton: {
-    marginLeft: 10,
-    backgroundColor: "#18d82eff",
-    paddingHorizontal: 20,
-    height: 48,
-    borderRadius: 12,
+  inputContainer: { flexDirection: "row", padding: 12, borderTopWidth: 1, borderColor: "#ccc", backgroundColor: "#fff", alignItems: "center" },
+  textInput: { flex: 1, height: 48, borderWidth: 1, borderColor: "#bbb", borderRadius: 12, paddingHorizontal: 14, fontSize: 16 },
+  sendButton: { marginLeft: 10, backgroundColor: "#18d82eff", paddingHorizontal: 20, height: 48, borderRadius: 12, justifyContent: "center", alignItems: "center" },
+  sendText: { color: "#fff", fontWeight: "600", fontSize: 16 },
+  iconButton: { marginHorizontal: 6 },
+  previewOverlay: {
+    position: "absolute",
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.8)",
     justifyContent: "center",
     alignItems: "center",
+    zIndex: 999,
   },
-  sendText: { color: "#fff", fontWeight: "600", fontSize: 16 },
 });

@@ -4,7 +4,7 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function Home() {
-  const IP = " 10.154.226.51:3000"; 
+  const IP = "10.176.143.51:3000"; 
   const router = useRouter();
   const { userId: paramUserId } = useLocalSearchParams();
   const [userId, setuserId] = useState(paramUserId || "");
