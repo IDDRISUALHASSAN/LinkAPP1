@@ -52,8 +52,8 @@ export default function Home() {
       });
 
       const data = await response.json();
-      console.log("🔍 Sent userId:", userId);
-      console.log("🔍 Sent OTP:", otp);
+      console.log(" Sent userId:", userId);
+      console.log(" Sent OTP:", otp);
 
       if (data.success) {
         // ✅ Save token and phone only after successful verification

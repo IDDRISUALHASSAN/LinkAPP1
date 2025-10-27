@@ -11,6 +11,7 @@ export default function Layout() {
       }}
     >
       <Stack.Screen name="chat" options={{ title: "Chat" }} />
+      <Stack.Screen name="user" options={{ title: "User" }} />
     </Stack>
   );
 }

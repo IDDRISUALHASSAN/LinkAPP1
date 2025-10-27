@@ -19,7 +19,7 @@ import {
 } from "react-native";
 import { io } from "socket.io-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
@@ -261,6 +261,7 @@ export default function Chat() {
       }
       onLongPress={() => isMine && confirmDelete(item)}
     >
+
       <View style={[styles.messageBox, isMine ? styles.myMessage : styles.theirMessage]}>
         {item.fileUrl ? (
           item.fileUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
@@ -284,6 +285,10 @@ export default function Chat() {
 
   return (
     <>
+
+
+
+
       {/* Delete modal */}
       <Modal visible={deleteModal.visible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
@@ -339,8 +344,13 @@ export default function Chat() {
         <View style={styles.headerContainer}>
           <Image source={profilePic ? { uri: profilePic } : require("../../assets/images/avatar.png")} style={styles.profilePic} />
           <View>
-            <Text style={styles.receiverName}>{receiverName || "User"}</Text>
-            <Text style={styles.receiverStatus}>Online</Text>
+            <TouchableOpacity onPress={() => {
+              router.push({pathname: "./user", 
+                params: { phone: receiverId}});
+            }}>
+              <Text style={styles.receiverName}>{receiverName || "User"}</Text>
+              <Text style={styles.receiverStatus}>Online</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
