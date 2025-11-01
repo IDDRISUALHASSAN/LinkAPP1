@@ -12,14 +12,15 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
-
-const API = "http://10.176.143.51:3000";
+import Constants from "expo-constants";
+const API_URL = Constants.expoConfig.extra.API_URL;
 
 export default function Profile() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const fadeAnim = useState(new Animated.Value(0))[0];
+  
 
   // 🔹 Fade-in animation for smooth load
   const fadeIn = () => {
@@ -36,7 +37,7 @@ export default function Profile() {
       const token = await AsyncStorage.getItem("token");
       if (!token) return;
 
-      const res = await fetch(`${API}/profile`, {
+      const res = await fetch(`${API_URL}/profile`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
@@ -93,7 +94,7 @@ export default function Profile() {
         type: "image/jpeg",
       });
 
-      const res = await fetch(`${API}/profilepic`, {
+      const res = await fetch(`${API_URL}/profilepic`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -145,7 +146,7 @@ export default function Profile() {
           source={
             user.profilePic
               ? { uri: user.profilePic }
-              : require("../../assets/images/avatar.png")
+              : require("../../assets/images/profile.png")
           }
           style={styles.avatar}
         />

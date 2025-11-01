@@ -9,16 +9,17 @@ import {
 } from "react-native";
 import React, { useState, useEffect } from "react";
 import { useRouter } from "expo-router";
+import Constants from "expo-constants";
 
 export default function Contacts() {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const IP = "10.176.143.51:3000";
+const API_URL = Constants.expoConfig.extra.API_URL;
   const router = useRouter();
 
   const getContacts = async () => {
     try {
-      const response = await fetch(`http://${IP}/users`);
+      const response = await fetch(`${API_URL}/users`);
       const data = await response.json();
 
       if (data.success) {
@@ -44,7 +45,7 @@ export default function Contacts() {
     ) {
       return { uri: contact.profilePic };
     } else {
-      return require("../../assets/images/avatar.png"); 
+      return require("../../assets/images/profile.png"); 
     }
   };
 

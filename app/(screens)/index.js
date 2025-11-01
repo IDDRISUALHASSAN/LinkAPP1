@@ -11,9 +11,10 @@ import React, { useEffect, useState } from "react";
 import { Link, useRouter } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Animated, { FadeInDown } from "react-native-reanimated";
+import Constants from "expo-constants";
 
 export default function Home() {
-const IP = "10.176.143.51:3000"; 
+const API_URL = Constants.expoConfig.extra.API_URL;
   const router = useRouter();
 
   const [isloading, setIsloading] = useState(true);
@@ -42,7 +43,7 @@ const IP = "10.176.143.51:3000";
 
       setLoadingLogin(true);
 
-      const respond = await fetch(`http://${IP}/login`, {
+      const respond = await fetch(`${API_URL}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ PhoneNumber, password }),
@@ -53,7 +54,7 @@ const IP = "10.176.143.51:3000";
       if (!data.success) {
         Alert.alert("Login Failed", data.message || "Invalid credentials");
       } else {
-        Alert.alert("Success", "Login successful 🎉");
+        Alert.alert("Success", "Login successful ");
 
         
         await AsyncStorage.setItem("token", data.token);
@@ -96,8 +97,8 @@ const IP = "10.176.143.51:3000";
               placeholder="Enter your phone number"
               value={PhoneNumber}
               onChangeText={setPhoneNumber}
-              style={styles.NameInput}
-              keyboardType="numeric"
+               keyboardType="phone-pad"
+               style={styles.NameInput}
             />
 
             <Text style={styles.name}>Password</Text>
@@ -120,7 +121,7 @@ const IP = "10.176.143.51:3000";
             )}
 
             <Text style={{ marginTop: 20 }}>
-              <Link href="/signUp" style={{ color: "white", fontWeight: "600" }}>
+              <Link href="/signUp" style={{ color: "#2d1a1aff", fontWeight: "900" }}>
                 Don’t have an account? Signup
               </Link>
             </Text>

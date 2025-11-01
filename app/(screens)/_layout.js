@@ -10,8 +10,8 @@ export default function Layout() {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        const token = await AsyncStorage.getItem("userToken");
-        setIsLoggedIn(!!token); 
+        const userId = await AsyncStorage.getItem("userId"); // match signup storage
+        setIsLoggedIn(!!userId); 
       } catch (e) {
         console.log("Error reading token", e);
       } finally {
@@ -34,10 +34,13 @@ export default function Layout() {
     <Stack screenOptions={{ headerShown: false }}>
       {isLoggedIn ? (
         <Stack.Screen name="home" />
-      ) : null}
-      {!isLoggedIn && <Stack.Screen name="login" />}
-      {!isLoggedIn && <Stack.Screen name="signUp" />}
-      {!isLoggedIn && <Stack.Screen name="auth" />}
+      ) : (
+        <>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="signUp" />
+          <Stack.Screen name="auth" />
+        </>
+      )}
     </Stack>
   );
 }

@@ -21,11 +21,12 @@ export default function UserProfileScreen() {
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const lastTap = useRef(null);
-  const IP = "10.176.143.51:3000";
+  const API_URL = "https://linkapp2.onrender.com";
 
+  
   // Fetch user info
   useEffect(() => {
-    fetch(`http://${IP}/user-info/${phone}`)
+    fetch(`${API_URL}/user-info/${phone}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.success) setUser(data.user);

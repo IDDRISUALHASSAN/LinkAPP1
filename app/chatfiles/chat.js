@@ -24,12 +24,13 @@ import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import { Video, Audio } from "expo-av";
+import Constants from "expo-constants";
 
 const { width, height } = Dimensions.get("window");
 
 export default function Chat() {
   const { receiverId, receiverName, profilePic } = useLocalSearchParams();
-  const IP = "10.176.143.51:3000";
+  const API_URL = Constants.expoConfig.extra.API_URL;
 
   const [socket, setSocket] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -128,7 +129,7 @@ export default function Chat() {
       formData.append("to", receiverId);
       formData.append("file", { uri: fileUri, name, type });
 
-      const res = await fetch(`http://${IP}/messages/send-file`, {
+      const res = await fetch(`${API_URL}/messages/send-file`, {
         method: "POST",
         headers: {
           "Content-Type": "multipart/form-data",
@@ -140,7 +141,6 @@ export default function Chat() {
       const text = await res.text();
       if (!res.ok) throw new Error(text);
       const data = JSON.parse(text);
-
       if (data.success) {
         socket?.emit("message", data.message);
         setMessages((prev) => [...prev, data.message]);
@@ -167,7 +167,7 @@ export default function Chat() {
 
   useEffect(() => {
     if (!userId || !receiverId) return;
-    const newSocket = io(`http://${IP}`, { transports: ["websocket"] });
+    const newSocket = io(`${API_URL}`, { transports: ["websocket"] });
     setSocket(newSocket);
     newSocket.emit("login", userId);
     newSocket.emit("loadHistory", { from: userId, to: receiverId });
@@ -342,7 +342,7 @@ export default function Chat() {
 
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={90}>
         <View style={styles.headerContainer}>
-          <Image source={profilePic ? { uri: profilePic } : require("../../assets/images/avatar.png")} style={styles.profilePic} />
+          <Image source={profilePic ? { uri: profilePic } : require("../../assets/images/profile.png")} style={styles.profilePic} />
           <View>
             <TouchableOpacity onPress={() => {
               router.push({pathname: "./user", 

@@ -2,6 +2,7 @@ import React from "react";
 import { StyleSheet, Text, View, TouchableOpacity, Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
+import Constants from "expo-constants";
 
 export default function Logout() {
   const router = useRouter();
@@ -15,7 +16,7 @@ export default function Logout() {
         [
           {
             text: "OK",
-            onPress: () => router.replace("/login"), // Navigate after alert is dismissed
+            onPress: () => router.replace("/"), // Navigate after alert is dismissed
           },
         ],
         { cancelable: false }

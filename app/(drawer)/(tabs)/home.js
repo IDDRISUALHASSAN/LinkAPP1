@@ -9,8 +9,12 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter, useFocusEffect } from "expo-router";
+import Constants from "expo-constants";
 
-  const IP = "10.176.143.51:3000";
+
+
+const API_URL = Constants.expoConfig.extra.API_URL;
+
 export default function Conversations() {
   const [conversations, setConversations] = useState([]);
   const router = useRouter();
@@ -30,7 +34,7 @@ export default function Conversations() {
       }
       if (!phone) return;
 
-      const url = `http://${IP}/conversations/${encodeURIComponent(phone)}`;
+      const url = `${API_URL}/conversations/${encodeURIComponent(phone)}`;
       const res = await fetch(url);
       if (!res.ok) {
         console.log("Failed to fetch conversations:", res.status);

@@ -1,70 +1,81 @@
-import { ActivityIndicator, Button, StyleSheet, Text, TextInput, View, Alert } from 'react-native';
-import React, { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  Alert,
+  TouchableOpacity,
+} from "react-native";
+import React, { useEffect, useState } from "react";
 import { useRouter, useLocalSearchParams } from "expo-router";
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
 
-export default function Home() {
-  const IP = "10.176.143.51:3000"; 
+export default function Auth() {
+const API_URL = Constants.expoConfig.extra.API_URL;
   const router = useRouter();
-  const { userId: paramUserId } = useLocalSearchParams();
-  const [userId, setuserId] = useState(paramUserId || "");
-  const [isloading, setIsloading] = useState(true);
-  const [otp, setotp] = useState('');
+  const { userId: paramUserId, phoneNumber: paramPhone } = useLocalSearchParams();
 
-  // Only store userId at first load
+  const [userId, setUserId] = useState(paramUserId || "");
+  const [phoneNumber, setPhoneNumber] = useState(paramPhone || "");
+  const [isLoading, setIsLoading] = useState(true);
+  const [otp, setOtp] = useState("");
+  const [resending, setResending] = useState(false);
+
+  // Load data from params or AsyncStorage
   useEffect(() => {
-    const loadUserId = async () => {
+    const loadData = async () => {
       try {
-        if (!paramUserId) {
-          const storedId = await AsyncStorage.getItem("userId");
-          if (storedId) setuserId(storedId);
-        } else {
+        if (paramUserId) {
           await AsyncStorage.setItem("userId", paramUserId);
-          setuserId(paramUserId);
+          setUserId(paramUserId);
+        } else {
+          const storedId = await AsyncStorage.getItem("userId");
+          if (storedId) setUserId(storedId);
+        }
+
+        if (paramPhone) {
+          await AsyncStorage.setItem("phoneNumber", paramPhone);
+          setPhoneNumber(paramPhone);
+        } else {
+          const storedPhone = await AsyncStorage.getItem("phoneNumber");
+          if (storedPhone) setPhoneNumber(storedPhone);
         }
       } catch (error) {
         console.error("AsyncStorage error:", error);
         Alert.alert("Error", "Failed to access local storage.");
+      } finally {
+        setIsLoading(false);
       }
     };
-    loadUserId();
-  }, [paramUserId]);
+    loadData();
+  }, [paramUserId, paramPhone]);
 
   const confirm = async () => {
-    if (!userId) {
-      Alert.alert("Error", "User ID missing, please sign up again.");
-      return;
-    }
-    if (!otp) {
-      Alert.alert("Missing OTP", "OTP is required to continue");
-      return;
-    }
-    if (otp.length !== 6) {
-      Alert.alert("Invalid OTP", "OTP must be 6 digits");
-      return;
-    }
+    if (!userId) return Alert.alert("Error", "User ID missing, please sign up again.");
+    if (!otp) return Alert.alert("Missing OTP", "OTP is required to continue");
+    if (otp.length !== 6) return Alert.alert("Invalid OTP", "OTP must be 6 digits");
 
     try {
-      const response = await fetch(`http://${IP}/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch(`${API_URL}/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId, otp }),
       });
 
       const data = await response.json();
-      console.log(" Sent userId:", userId);
-      console.log(" Sent OTP:", otp);
+      console.log(" Verify Response:", data);
 
-      if (data.success) {
-        // ✅ Save token and phone only after successful verification
-        await AsyncStorage.setItem("userToken", data.token);
-        await AsyncStorage.setItem("userId", data.user._id);
-        await AsyncStorage.setItem("phoneNumber", data.user.phone);
+      if (data.success && data.user) {
+        await AsyncStorage.setItem("userToken", data.token ?? "");
+        await AsyncStorage.setItem("userId", data.user._id ?? "");
+        await AsyncStorage.setItem("phoneNumber", data.user.PhoneNumber ?? "");
 
         Alert.alert("Success", "Verification successful!");
-        router.replace("/home");   
+        router.replace("/home");
       } else {
-        Alert.alert("Verification Failed", data.message || "Invalid OTP, please try again.");
+        Alert.alert("Verification Failed", data.message || "Invalid OTP.");
       }
     } catch (error) {
       console.error("Verification failed:", error);
@@ -72,72 +83,99 @@ export default function Home() {
     }
   };
 
-  useEffect(() => {
-    const timer = setTimeout(() => setIsloading(false), 2000);
-    return () => clearTimeout(timer);
-  }, []);
+  const resendOtp = async () => {
+    try {
+      setResending(true);
+      const response = await fetch(`${API_URL}/resend-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ PhoneNumber: phoneNumber }),
+      });
+      const data = await response.json();
+
+      console.log("📩 Resend OTP Response:", data);
+      if (data.success) {
+        Alert.alert("OTP Resent", "A new OTP has been sent to your WhatsApp.");
+      } else {
+        Alert.alert("Failed", data.message || "Could not resend OTP.");
+      }
+    } catch (error) {
+      console.error("Resend OTP error:", error);
+      Alert.alert("Error", "Failed to resend OTP. Please try again.");
+    } finally {
+      setResending(false);
+    }
+  };
 
   return (
     <View style={styles.mainContainer}>
-      {isloading ? (
+      {isLoading ? (
         <ActivityIndicator size="large" color="green" />
       ) : (
-        <>
-          <Text style={styles.header}>WELCOME TO LINKUP</Text>
-          <View style={styles.container_2}>
-            <Text style={styles.name}>OTP Confirmation</Text>
-            <TextInput
-              placeholder="Enter the OTP sent to you"
-              value={otp}
-              onChangeText={setotp}
-              style={styles.NameInput}
-              keyboardType="numeric"
-            />
-            <Button title="Confirm" onPress={confirm} />
-          </View>
-        </>
+        <View style={styles.container}>
+          <Text style={styles.header}>Verify Your Account</Text>
+
+          <TextInput
+            placeholder="Enter OTP"
+            value={otp}
+            onChangeText={setOtp}
+            style={styles.input}
+            keyboardType="numeric"
+          />
+
+          <TouchableOpacity style={styles.confirmButton} onPress={confirm}>
+            <Text style={styles.buttonText}>Confirm</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.resendButton}
+            onPress={resendOtp}
+            disabled={resending}
+          >
+            <Text style={styles.resendText}>
+              {resending ? "Resending..." : "Resend OTP"}
+            </Text>
+          </TouchableOpacity>
+        </View>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  mainContainer: { 
+  mainContainer: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'white' 
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#fff",
   },
-  container_2: { 
-    alignContent: 'center',
-    justifyContent: 'center',
-    alignItems: 'center', 
-    height: 400, 
-    width: 350, 
-    backgroundColor: '#8f9690ff', 
-    borderRadius: 8, 
-    padding: 20 
+  container: {
+    width: "90%",
+    maxWidth: 350,
+    backgroundColor: "#e1e5ee",
+    borderRadius: 12,
+    padding: 25,
+    alignItems: "center",
   },
-  header: { 
-    fontSize: 20, 
-    fontWeight: 'bold', 
-    marginBottom: 60 
+  header: { fontSize: 22, fontWeight: "bold", marginBottom: 20 },
+  input: {
+    width: "100%",
+    height: 45,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d0d7de",
+    backgroundColor: "#fff",
+    paddingHorizontal: 10,
+    marginBottom: 15,
   },
-  name: { 
-    alignSelf: "flex-start",
-    marginLeft: 50, 
-    marginTop: 20,
-    fontSize: 16, 
-    fontWeight: '500', 
-    color: '#060615ff'
+  confirmButton: {
+    backgroundColor: "#2e7d32",
+    width: "100%",
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
   },
-  NameInput: { 
-    padding: 10,
-    height: 40,
-    width: 250,
-    backgroundColor: '#c5ceddff', 
-    borderRadius: 10, 
-    color: '#060615ff',
-    marginBottom: 10 
-  }
+  buttonText: { color: "#fff", fontSize: 16, fontWeight: "600" },
+  resendButton: { marginTop: 15 },
+  resendText: { color: "#2e7d32", fontSize: 15, fontWeight: "500" },
 });
