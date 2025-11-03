@@ -175,7 +175,11 @@ export default function Chat() {
     newSocket.on("history", (history) => {
       setMessages(history || []);
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
-      newSocket.emit("markAsRead", { from: userId, to: receiverId });
+fetch(`${API_URL}/messages/mark-read`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ from: receiverId, to: userId }),
+});
     });
 
     newSocket.on("message", (msg) => {
@@ -192,17 +196,34 @@ export default function Chat() {
 
   const confirmDelete = (message) => setDeleteModal({ visible: true, message });
   const deleteMessage = async () => {
-    try {
-      const msgId = deleteModal.message?._id;
-      if (!msgId) return;
-      socket.emit("deleteMessage", msgId);
+  try {
+    const msgId = deleteModal.message?._id;
+    if (!msgId) return;
+
+    const token = await AsyncStorage.getItem("token");
+
+    const res = await fetch(`${API_URL}/messages/${msgId}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = await res.json();
+    if (data.success) {
       setMessages((prev) => prev.filter((m) => m._id !== msgId));
-    } catch (err) {
-      Alert.alert("Error", "Failed to delete message.");
-    } finally {
-      setDeleteModal({ visible: false, message: null });
+      socket.emit("messageDeleted", msgId); 
+    } else {
+      Alert.alert("Error", data.message || "Failed to delete message.");
     }
-  };
+  } catch (err) {
+    console.error(err);
+    Alert.alert("Error", "Failed to delete message.");
+  } finally {
+    setDeleteModal({ visible: false, message: null });
+  }
+};
 
   const sendMessage = () => {
     if (!input.trim() || !socket || !userId) return;

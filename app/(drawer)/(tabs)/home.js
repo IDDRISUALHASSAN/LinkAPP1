@@ -70,7 +70,7 @@ export default function Conversations() {
         data={conversations}
         keyExtractor={(item) => item.phone}
         renderItem={({ item }) => {
-          // ✅ Use profilePic from server or fallback avatar
+          // Use profilePic from server or fallback avatar
           const imageSource = item.profilePic
             ? { uri: item.profilePic }
             : { uri: defaultAvatar };
@@ -84,6 +84,7 @@ export default function Conversations() {
                   params: {
                     receiverId: item.phone,
                     receiverName: item.name,
+                    profilePic: item.profilePic,
                   },
                 })
               }

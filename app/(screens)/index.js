@@ -94,7 +94,8 @@ const API_URL = Constants.expoConfig.extra.API_URL;
           <View style={styles.container_2}>
             <Text style={styles.name}>Phone Number</Text>
             <TextInput
-              placeholder="Enter your phone number"
+              placeholder="Enter your phone number (+233)"
+              placeholderTextColor="#060615ff"
               value={PhoneNumber}
               onChangeText={setPhoneNumber}
                keyboardType="phone-pad"

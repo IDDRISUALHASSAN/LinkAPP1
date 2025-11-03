@@ -56,7 +56,7 @@ const API_URL = Constants.expoConfig.extra.API_URL;
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Create Account</Text>
-      <Text style={styles.name}>Name</Text>
+      <Text style={styles.name}>Name </Text>
       <TextInput
         style={styles.input}
         placeholder="Full Name"
@@ -64,10 +64,11 @@ const API_URL = Constants.expoConfig.extra.API_URL;
         onChangeText={setName}
       />
       
-      <Text style={styles.name}>Phone Number</Text>
+      <Text style={styles.name}>Phone Number </Text>
       <TextInput
         style={styles.input}
-        placeholder="Phone Number"
+        placeholder="Phone Number (+233)"
+        placeholderTextColor="#131010cb"
         keyboardType="phone-pad"
         value={PhoneNumber}
         onChangeText={setPhoneNumber}
