@@ -12,6 +12,8 @@ import { Link, useRouter } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import Constants from "expo-constants";
+import { Ionicons } from "@expo/vector-icons";
+
 
 export default function Home() {
 const API_URL = Constants.expoConfig.extra.API_URL;
@@ -21,6 +23,8 @@ const API_URL = Constants.expoConfig.extra.API_URL;
   const [PhoneNumber, setPhoneNumber] = useState("");
   const [password, setPassword] = useState("");
   const [loadingLogin, setLoadingLogin] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
 
   
   useEffect(() => {
@@ -81,6 +85,12 @@ const API_URL = Constants.expoConfig.extra.API_URL;
     }
   };
 
+    
+
+
+
+
+
   return (
     <View style={styles.main}>
       {isloading ? (
@@ -108,7 +118,14 @@ const API_URL = Constants.expoConfig.extra.API_URL;
               value={password}
               onChangeText={setPassword}
               style={styles.NameInput}
-              secureTextEntry
+              secureTextEntry ={!showPassword}
+            />
+            <Ionicons
+              name={showPassword ? "eye-off" : "eye"}
+              size={24}
+              color="black"
+              onPress={() => setShowPassword(!showPassword)}
+              style={styles.eyeIcon}
             />
 
             {loadingLogin ? (
@@ -125,6 +142,12 @@ const API_URL = Constants.expoConfig.extra.API_URL;
               <Link href="/signUp" style={{ color: "#2d1a1aff", fontWeight: "900" }}>
                 Don’t have an account? Signup
               </Link>
+            </Text>
+            <Text style={styles.forgotpass}>
+              Forgot Password?
+              <Link href="/chat/forgotpassrest" style={{ color: "#ea1e4dff", fontWeight: "900" }}>
+                Reset Here
+              </Link> 
             </Text>
           </View>
         </Animated.View>
@@ -144,7 +167,7 @@ const styles = StyleSheet.create({
     alignContent: "center",
     justifyContent: "center",
     alignItems: "center",
-    height: 400,
+    height: 600,
     width: 350,
     backgroundColor: "#05a31dff",
     borderRadius: 8,
@@ -171,5 +194,15 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     color: "#060615ff",
     marginBottom: 10,
+  },
+  forgotpass: {
+    marginTop: 40,
+    color: "#1111e2ff",
+  },
+  eyeIcon: {
+    position: "absolute",
+    right: 60,
+    top: 281,
+    
   },
 });

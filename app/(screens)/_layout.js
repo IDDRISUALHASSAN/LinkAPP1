@@ -39,6 +39,10 @@ export default function Layout() {
           <Stack.Screen name="index" />
           <Stack.Screen name="signUp" />
           <Stack.Screen name="auth" />
+          <Stack.Screen name="verifyReset" />
+          <Stack.Screen name="forgotPassword" />
+
+          
         </>
       )}
     </Stack>

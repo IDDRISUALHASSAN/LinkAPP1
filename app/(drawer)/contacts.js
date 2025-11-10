@@ -18,7 +18,7 @@ export default function Contacts() {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
-  const API_URL = 'http://192.168.0.139:3000';
+const API_URL = Constants.expoConfig.extra.API_URL;
 
   const getContacts = async () => {
     try {

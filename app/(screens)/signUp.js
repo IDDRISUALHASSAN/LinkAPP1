@@ -10,6 +10,8 @@ import {
 } from "react-native";
 import { useRouter, Link } from "expo-router";
 import Constants from "expo-constants";
+import { Ionicons } from "@expo/vector-icons";
+
 
 export default function Signup() {
   const router = useRouter();
@@ -19,6 +21,8 @@ const API_URL = Constants.expoConfig.extra.API_URL;
   const [PhoneNumber, setPhoneNumber] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
 
   const handleSignup = async () => {
     if (!name || !PhoneNumber || !password) {
@@ -34,7 +38,7 @@ const API_URL = Constants.expoConfig.extra.API_URL;
       });
 
       const data = await response.json();
-      console.log("📤 Signup Response:", data);
+      console.log(" Signup Response:", data);
 
       if (data.success) {
         Alert.alert("Success", "OTP has been sent to your WhatsApp!");
@@ -52,6 +56,8 @@ const API_URL = Constants.expoConfig.extra.API_URL;
       setLoading(false);
     }
   };
+
+
 
   return (
     <View style={styles.container}>
@@ -78,9 +84,16 @@ const API_URL = Constants.expoConfig.extra.API_URL;
       <TextInput
         style={styles.input}
         placeholder="Password"
-        secureTextEntry
+        secureTextEntry={!showPassword}
         value={password}
         onChangeText={setPassword}
+      />
+      <Ionicons
+        name={showPassword ? "eye-off" : "eye"}
+        size={24}
+        color="black"
+        onPress={() => setShowPassword(!showPassword)}
+        style={styles.eyeIcon}
       />
 
       <TouchableOpacity
@@ -121,7 +134,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 12,
     marginBottom: 15,
-    color: "#000",
+    color: "#232121dc",
     backgroundColor: "#fff",
   },
   button: {
@@ -136,5 +149,12 @@ const styles = StyleSheet.create({
   name: { alignSelf: "flex-start",
     marginBottom: 5,
     fontWeight: "600" 
+  },
+  eyeIcon: {
+     position: "absolute",
+    right: 60,
+    top: 465,
+    left: 280,
+    zIndex: 1,
   },
 });
