@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "325720352224",
+    "project_id": "linkapp-7286c",
+    "storage_bucket": "linkapp-7286c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:325720352224:android:6279f074124c0383e27785",
+        "android_client_info": {
+          "package_name": "com.anonymous.LinkApp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDBzoh2H5lHa5sw82t8bHyvqPpVXKQEn6Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

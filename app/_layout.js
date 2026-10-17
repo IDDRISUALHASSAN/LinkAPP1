@@ -1,12 +1,12 @@
 import { Stack } from "expo-router";
+import usePushNotifications from "../hooks/usePushNotifications";
 
 export default function RootLayout() {
+  usePushNotifications();
+
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      {/* Auth screens */}
       <Stack.Screen name="(screens)" />
-
-      {/* Main app after login */}
       <Stack.Screen name="(drawer)" />
     </Stack>
   );

@@ -1,38 +1,68 @@
-import React, { useState, useEffect, useRef } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import Constants from "expo-constants";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system";
+import * as ImagePicker from "expo-image-picker";
+import { router, useLocalSearchParams } from "expo-router";
+import { VideoView, useVideoPlayer } from "expo-video";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  AppState,
+  Dimensions,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
   StyleSheet,
-  View,
   Text,
   TextInput,
   TouchableOpacity,
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-  Animated,
-  Pressable,
-  Linking,
-  Image,
-  ActivityIndicator,
-  Modal,
-  Dimensions,
+  View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { io } from "socket.io-client";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { router, useLocalSearchParams } from "expo-router";
-import * as DocumentPicker from "expo-document-picker";
-import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system";
-import { Video, Audio } from "expo-av";
-import Constants from "expo-constants";
 
 const { width, height } = Dimensions.get("window");
+
+function AudioAttachmentPlayer({ uri }) {
+  const player = useAudioPlayer(uri);
+  const status = useAudioPlayerStatus(player);
+
+  return (
+    <TouchableOpacity
+      onPress={() => (status.playing ? player.pause() : player.play())}
+      style={styles.audioBtn}
+    >
+      <Text>{status.playing ? "⏸️ Pause" : "▶️ Play"}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function VideoAttachmentPlayer({ uri, style }) {
+  const player = useVideoPlayer(uri);
+
+  return (
+    <VideoView
+      player={player}
+      style={style}
+      nativeControls
+      contentFit="contain"
+    />
+  );
+}
 
 export default function Chat() {
   const { receiverId, receiverName, profilePic } = useLocalSearchParams();
   const API_URL = Constants.expoConfig.extra.API_URL;
 
-  const [socket, setSocket] = useState(null);
+  const socketRef = useRef(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [userId, setUserId] = useState(null);
@@ -40,10 +70,14 @@ export default function Chat() {
   const [previewFile, setPreviewFile] = useState(null);
   const [previewMeta, setPreviewMeta] = useState(null);
   const [imageModal, setImageModal] = useState({ visible: false, uri: null });
-  const [deleteModal, setDeleteModal] = useState({ visible: false, message: null });
+  const [deleteModal, setDeleteModal] = useState({
+    visible: false,
+    message: null,
+  });
 
   const flatListRef = useRef(null);
-  const shakeAnim = useRef(new Animated.Value(0)).current;
+  const shakeAnim = useMemo(() => new Animated.Value(0), []);
+  const insets = useSafeAreaInsets();
 
   const guessMimeTypeFromName = (name) => {
     if (!name) return "application/octet-stream";
@@ -73,9 +107,13 @@ export default function Chat() {
 
   const getLocalPath = async (uri) => {
     if (!uri.startsWith("content://")) return uri;
-    const newPath = `${FileSystem.cacheDirectory}${Date.now()}.tmp`;
-    await FileSystem.copyAsync({ from: uri, to: newPath });
-    return newPath;
+
+    const tempFile = new FileSystem.File(
+      FileSystem.Paths.cache,
+      `${Date.now()}.tmp`,
+    );
+    await FileSystem.copyAsync({ from: uri, to: tempFile.uri });
+    return tempFile.uri;
   };
 
   const pickImage = async () => {
@@ -142,7 +180,7 @@ export default function Chat() {
       if (!res.ok) throw new Error(text);
       const data = JSON.parse(text);
       if (data.success) {
-        socket?.emit("message", data.message);
+        socketRef.current?.emit("message", data.message);
         setMessages((prev) => [...prev, data.message]);
         setPreviewFile(null);
         setPreviewMeta(null);
@@ -168,109 +206,96 @@ export default function Chat() {
   useEffect(() => {
     if (!userId || !receiverId) return;
     const newSocket = io(`${API_URL}`, { transports: ["websocket"] });
-    setSocket(newSocket);
+    socketRef.current = newSocket;
     newSocket.emit("login", userId);
+    newSocket.emit("viewChat", { phoneNumber: userId, chatWith: receiverId });
     newSocket.emit("loadHistory", { from: userId, to: receiverId });
 
     newSocket.on("history", (history) => {
       setMessages(history || []);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
-fetch(`${API_URL}/messages/mark-read`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ from: receiverId, to: userId }),
-});
+      setTimeout(
+        () => flatListRef.current?.scrollToEnd({ animated: false }),
+        100,
+      );
+      fetch(`${API_URL}/messages/mark-read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from: receiverId, to: userId }),
+      });
     });
 
     newSocket.on("message", (msg) => {
       setMessages((prev) => [...prev, msg]);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+      setTimeout(
+        () => flatListRef.current?.scrollToEnd({ animated: true }),
+        100,
+      );
     });
 
     newSocket.on("messageDeleted", (deletedId) => {
       setMessages((prev) => prev.filter((m) => m._id !== deletedId));
     });
 
-    return () => newSocket.disconnect();
-  }, [userId, receiverId]);
+    // Notify the backend when the app transitions between foreground / background
+    const handleAppStateChange = (nextAppState) => {
+      const state =
+        nextAppState === "active" ? "active" : "background";
+      newSocket.emit("appState", { phoneNumber: userId, state });
+    };
+    const appStateListener = AppState.addEventListener(
+      "change",
+      handleAppStateChange,
+    );
+
+    return () => {
+      newSocket.emit("leaveChat", { phoneNumber: userId });
+      appStateListener.remove();
+      newSocket.disconnect();
+    };
+  }, [API_URL, userId, receiverId]);
 
   const confirmDelete = (message) => setDeleteModal({ visible: true, message });
   const deleteMessage = async () => {
-  try {
-    const msgId = deleteModal.message?._id;
-    if (!msgId) return;
+    try {
+      const msgId = deleteModal.message?._id;
+      if (!msgId) return;
 
-    const token = await AsyncStorage.getItem("token");
+      const token = await AsyncStorage.getItem("token");
 
-    const res = await fetch(`${API_URL}/messages/${msgId}`, {
-      method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-    });
+      const res = await fetch(`${API_URL}/messages/${msgId}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-    const data = await res.json();
-    if (data.success) {
-      setMessages((prev) => prev.filter((m) => m._id !== msgId));
-      socket.emit("messageDeleted", msgId); 
-    } else {
-      Alert.alert("Error", data.message || "Failed to delete message.");
+      const data = await res.json();
+      if (data.success) {
+        setMessages((prev) => prev.filter((m) => m._id !== msgId));
+        socketRef.current.emit("messageDeleted", msgId);
+      } else {
+        Alert.alert("Error", data.message || "Failed to delete message.");
+      }
+    } catch (err) {
+      console.error(err);
+      Alert.alert("Error", "Failed to delete message.");
+    } finally {
+      setDeleteModal({ visible: false, message: null });
     }
-  } catch (err) {
-    console.error(err);
-    Alert.alert("Error", "Failed to delete message.");
-  } finally {
-    setDeleteModal({ visible: false, message: null });
-  }
-};
+  };
 
   const sendMessage = () => {
-    if (!input.trim() || !socket || !userId) return;
+    if (!input.trim() || !socketRef.current || !userId) return;
     const msg = {
       from: userId,
       to: receiverId,
       text: input.trim(),
       timestamp: new Date().toISOString(),
     };
-    socket.emit("message", msg);
+    socketRef.current.emit("message", msg);
     setMessages((prev) => [...prev, msg]);
     setInput("");
-  };
-
-  const AudioPlayer = ({ uri }) => {
-    const [sound, setSound] = useState(null);
-    const [playing, setPlaying] = useState(false);
-    const togglePlay = async () => {
-      try {
-        if (!sound) {
-          const { sound: newSound } = await Audio.Sound.createAsync({ uri });
-          setSound(newSound);
-          await newSound.playAsync();
-          setPlaying(true);
-          newSound.setOnPlaybackStatusUpdate((status) => {
-            if (status.didJustFinish) setPlaying(false);
-          });
-        } else {
-          const status = await sound.getStatusAsync();
-          if (status.isPlaying) {
-            await sound.pauseAsync();
-            setPlaying(false);
-          } else {
-            await sound.playAsync();
-            setPlaying(true);
-          }
-        }
-      } catch {
-        Alert.alert("Audio error", "Could not play this audio file.");
-      }
-    };
-    useEffect(() => (sound ? () => sound.unloadAsync() : undefined), [sound]);
-    return (
-      <TouchableOpacity onPress={togglePlay} style={styles.audioBtn}>
-        <Text>{playing ? "⏸️ Pause" : "▶️ Play"}</Text>
-      </TouchableOpacity>
-    );
   };
 
   const AnimatedMessage = ({ item, isMine }) => (
@@ -282,44 +307,67 @@ fetch(`${API_URL}/messages/mark-read`, {
       }
       onLongPress={() => isMine && confirmDelete(item)}
     >
-
-      <View style={[styles.messageBox, isMine ? styles.myMessage : styles.theirMessage]}>
+      <View
+        style={[
+          styles.messageBox,
+          isMine ? styles.myMessage : styles.theirMessage,
+        ]}
+      >
         {item.fileUrl ? (
           item.fileUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
-            <Image source={{ uri: item.fileUrl }} style={styles.imgMsg} resizeMode="cover" />
+            <Image
+              source={{ uri: item.fileUrl }}
+              style={styles.imgMsg}
+              resizeMode="cover"
+            />
           ) : item.fileUrl.match(/\.(mp4|mov)$/i) ? (
-            <Video source={{ uri: item.fileUrl }} style={styles.videoMsg} useNativeControls resizeMode="contain" />
+            <VideoAttachmentPlayer uri={item.fileUrl} style={styles.videoMsg} />
           ) : item.fileUrl.match(/\.(mp3|m4a|wav)$/i) ? (
-            <AudioPlayer uri={item.fileUrl} />
+            <AudioAttachmentPlayer uri={item.fileUrl} />
           ) : (
-            <TouchableOpacity onPress={() => Linking.openURL(item.fileUrl)} style={styles.fileBox}>
-              <Text style={styles.fileText}>📎 {item.fileName || "View file"}</Text>
+            <TouchableOpacity
+              onPress={() => Linking.openURL(item.fileUrl)}
+              style={styles.fileBox}
+            >
+              <Text style={styles.fileText}>
+                📎 {item.fileName || "View file"}
+              </Text>
             </TouchableOpacity>
           )
         ) : (
           <Text style={styles.messageText}>{item.text}</Text>
         )}
-        <Text style={styles.timestamp}>{new Date(item.timestamp || item.createdAt).toLocaleTimeString()}</Text>
+        <Text style={styles.timestamp}>
+          {new Date(item.timestamp || item.createdAt).toLocaleTimeString()}
+        </Text>
       </View>
     </Pressable>
   );
 
   return (
     <>
-
-
-
-
       {/* Delete modal */}
       <Modal visible={deleteModal.visible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={{ fontSize: 16, marginBottom: 10 }}>Delete this message?</Text>
-            <View style={{ flexDirection: "row", justifyContent: "space-around" }}>
-              <TouchableOpacity onPress={deleteMessage} style={[styles.modalBtn, { backgroundColor: "#e53935" }]}>
+            <Text style={{ fontSize: 16, marginBottom: 10 }}>
+              Delete this message?
+            </Text>
+            <View
+              style={{ flexDirection: "row", justifyContent: "space-around" }}
+            >
+              <TouchableOpacity
+                onPress={deleteMessage}
+                style={[styles.modalBtn, { backgroundColor: "#e53935" }]}
+              >
                 <Text style={{ color: "#fff" }}>Delete</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => setDeleteModal({ visible: false, message: null })} style={[styles.modalBtn, { backgroundColor: "#ccc" }]}>
+              <TouchableOpacity
+                onPress={() =>
+                  setDeleteModal({ visible: false, message: null })
+                }
+                style={[styles.modalBtn, { backgroundColor: "#ccc" }]}
+              >
                 <Text>Cancel</Text>
               </TouchableOpacity>
             </View>
@@ -328,9 +376,20 @@ fetch(`${API_URL}/messages/mark-read`, {
       </Modal>
 
       {/* Image zoom */}
-      <Modal visible={imageModal.visible} transparent onRequestClose={() => setImageModal({ visible: false, uri: null })}>
-        <Pressable style={styles.zoomContainer} onPress={() => setImageModal({ visible: false, uri: null })}>
-          <Image source={{ uri: imageModal.uri }} style={styles.zoomImage} resizeMode="contain" />
+      <Modal
+        visible={imageModal.visible}
+        transparent
+        onRequestClose={() => setImageModal({ visible: false, uri: null })}
+      >
+        <Pressable
+          style={styles.zoomContainer}
+          onPress={() => setImageModal({ visible: false, uri: null })}
+        >
+          <Image
+            source={{ uri: imageModal.uri }}
+            style={styles.zoomImage}
+            resizeMode="contain"
+          />
         </Pressable>
       </Modal>
 
@@ -338,22 +397,42 @@ fetch(`${API_URL}/messages/mark-read`, {
       {previewFile && (
         <View style={styles.previewOverlay}>
           {previewMeta?.type?.startsWith("image/") ? (
-            <Image source={{ uri: previewFile }} style={styles.previewImage} resizeMode="cover" />
+            <Image
+              source={{ uri: previewFile }}
+              style={styles.previewImage}
+              resizeMode="cover"
+            />
           ) : previewMeta?.type?.startsWith("video/") ? (
-            <Video source={{ uri: previewFile }} style={styles.previewVideo} useNativeControls resizeMode="contain" />
+            <VideoAttachmentPlayer
+              uri={previewFile}
+              style={styles.previewVideo}
+            />
           ) : previewMeta?.type?.startsWith("audio/") ? (
-            <AudioPlayer uri={previewFile} />
+            <AudioAttachmentPlayer uri={previewFile} />
           ) : (
             <Text style={styles.previewFileText}>📄 {previewMeta?.name}</Text>
           )}
           {uploading ? (
-            <ActivityIndicator size="large" color="#fff" style={{ marginTop: 20 }} />
+            <ActivityIndicator
+              size="large"
+              color="#fff"
+              style={{ marginTop: 20 }}
+            />
           ) : (
             <View style={styles.previewButtons}>
-              <TouchableOpacity onPress={() => sendFile(previewFile, previewMeta)} style={styles.sendBtn}>
+              <TouchableOpacity
+                onPress={() => sendFile(previewFile, previewMeta)}
+                style={styles.sendBtn}
+              >
                 <Text style={styles.sendTxt}>Send</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => { setPreviewFile(null); setPreviewMeta(null); }} style={styles.cancelBtn}>
+              <TouchableOpacity
+                onPress={() => {
+                  setPreviewFile(null);
+                  setPreviewMeta(null);
+                }}
+                style={styles.cancelBtn}
+              >
                 <Text style={styles.cancelTxt}>Cancel</Text>
               </TouchableOpacity>
             </View>
@@ -361,14 +440,29 @@ fetch(`${API_URL}/messages/mark-read`, {
         </View>
       )}
 
-      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={90}>
+     <KeyboardAvoidingView
+  style={styles.container}
+  behavior={Platform.OS === "ios" ? "padding" : "height"}
+  keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+>
         <View style={styles.headerContainer}>
-          <Image source={profilePic ? { uri: profilePic } : require("../../assets/images/profile.png")} style={styles.profilePic} />
+          <Image
+            source={
+              profilePic
+                ? { uri: profilePic }
+                : require("../../assets/images/profile.png")
+            }
+            style={styles.profilePic}
+          />
           <View>
-            <TouchableOpacity onPress={() => {
-              router.push({pathname: "./user", 
-                params: { phone: receiverId}});
-            }}>
+            <TouchableOpacity
+              onPress={() => {
+                router.push({
+                  pathname: "./user",
+                  params: { phone: receiverId },
+                });
+              }}
+            >
               <Text style={styles.receiverName}>{receiverName || "User"}</Text>
               <Text style={styles.receiverStatus}>Online</Text>
             </TouchableOpacity>
@@ -379,13 +473,33 @@ fetch(`${API_URL}/messages/mark-read`, {
           ref={flatListRef}
           data={messages}
           keyExtractor={(item, i) => item?._id || i.toString()}
-          renderItem={({ item }) => <AnimatedMessage item={item} isMine={item.from === userId} />}
-          contentContainerStyle={{ paddingBottom: 10 }}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          renderItem={({ item }) => (
+            <AnimatedMessage item={item} isMine={item.from === userId} />
+          )}
+          contentContainerStyle={{ paddingBottom: 14 + insets.bottom }}
+          onContentSizeChange={() =>
+            flatListRef.current?.scrollToEnd({ animated: true })
+          }
         />
 
-        <Animated.View style={[styles.inputContainer, { transform: [{ translateX: shakeAnim }] }]}>
-          <TextInput style={styles.textInput} value={input} onChangeText={setInput} placeholder="Type a message..." />
+       <Animated.View
+  style={[
+    styles.inputContainer,
+    {
+      paddingBottom: Math.max(insets.bottom, 10),
+      transform: [{ translateX: shakeAnim }],
+    },
+  ]}
+>
+          <TextInput
+            style={styles.textInput}
+            value={input}
+            onChangeText={setInput}
+            placeholder="Type a message..."
+            placeholderTextColor="#7a7a7a"
+            multiline
+            maxLength={500}
+          />
 
           {/* Single button that opens options for image or document */}
           <TouchableOpacity
@@ -399,14 +513,26 @@ fetch(`${API_URL}/messages/mark-read`, {
                   { text: "Document", onPress: pickDocument },
                   { text: "Cancel", style: "cancel" },
                 ],
-                { cancelable: true }
+                { cancelable: true },
               )
             }
             onPressIn={() => {
               Animated.sequence([
-                Animated.timing(shakeAnim, { toValue: -5, duration: 50, useNativeDriver: true }),
-                Animated.timing(shakeAnim, { toValue: 5, duration: 100, useNativeDriver: true }),
-                Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
+                Animated.timing(shakeAnim, {
+                  toValue: -5,
+                  duration: 50,
+                  useNativeDriver: true,
+                }),
+                Animated.timing(shakeAnim, {
+                  toValue: 5,
+                  duration: 100,
+                  useNativeDriver: true,
+                }),
+                Animated.timing(shakeAnim, {
+                  toValue: 0,
+                  duration: 50,
+                  useNativeDriver: true,
+                }),
               ]).start();
             }}
           >
@@ -425,7 +551,7 @@ fetch(`${API_URL}/messages/mark-read`, {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#ece5dd", 
+    backgroundColor: "#ece5dd",
   },
 
   /** HEADER **/
@@ -516,33 +642,54 @@ const styles = StyleSheet.create({
   /** INPUT AREA **/
   inputContainer: {
     flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#fff",
+    alignItems: "flex-end",
+    backgroundColor: "#f2f2f2",
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: "#ddd",
   },
-  textInput: {
-    flex: 1,
-    fontSize: 16,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: "#f7f7f7",
-    borderRadius: 20,
-  },
+ textInput: {
+  flex: 1,
+  minHeight: 42,
+  maxHeight: 120,
+  fontSize: 16,
+  lineHeight: 22,
+  paddingHorizontal: 14,
+  paddingVertical: 8,
+  backgroundColor: "#fff",
+  borderRadius: 22,
+  borderWidth: 1,
+  borderColor: "#e5e5e5",
+  marginRight: 8,
+  color: "#111",
+  textAlignVertical: "center",
+  includeFontPadding: false,
+},
   iconButton: {
-    padding: 6,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#ffffff",
+    justifyContent: "center",
+    alignItems: "center",
     marginHorizontal: 4,
+    borderWidth: 1,
+    borderColor: "#e4e4e4",
   },
   sendButton: {
+    width: 42,
+    height: 42,
     backgroundColor: "#25D366",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 25,
+    borderRadius: 21,
     marginLeft: 4,
     justifyContent: "center",
     alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 2,
   },
   sendText: {
     color: "#fff",
@@ -631,12 +778,10 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.95)",
     justifyContent: "center",
     alignItems: "center",
-   
   },
   zoomImage: {
     width: width * 1,
     height: height * 1,
     borderRadius: 10,
-
   },
 });

@@ -1,21 +1,22 @@
-import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-  Alert,
-  TouchableOpacity,
-} from "react-native";
-import React, { useEffect, useState } from "react";
-import { useRouter, useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useEffect, useState } from "react";
+import {
+    ActivityIndicator,
+    Alert,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from "react-native";
 
 export default function Auth() {
-const API_URL = Constants.expoConfig.extra.API_URL;
+  const API_URL = Constants.expoConfig.extra.API_URL;
   const router = useRouter();
-  const { userId: paramUserId, phoneNumber: paramPhone } = useLocalSearchParams();
+  const { userId: paramUserId, phoneNumber: paramPhone } =
+    useLocalSearchParams();
 
   const [userId, setUserId] = useState(paramUserId || "");
   const [phoneNumber, setPhoneNumber] = useState(paramPhone || "");
@@ -53,9 +54,11 @@ const API_URL = Constants.expoConfig.extra.API_URL;
   }, [paramUserId, paramPhone]);
 
   const confirm = async () => {
-    if (!userId) return Alert.alert("Error", "User ID missing, please sign up again.");
+    if (!userId)
+      return Alert.alert("Error", "User ID missing, please sign up again.");
     if (!otp) return Alert.alert("Missing OTP", "OTP is required to continue");
-    if (otp.length !== 6) return Alert.alert("Invalid OTP", "OTP must be 6 digits");
+    if (otp.length !== 6)
+      return Alert.alert("Invalid OTP", "OTP must be 6 digits");
 
     try {
       const response = await fetch(`${API_URL}/verify`, {
@@ -67,13 +70,10 @@ const API_URL = Constants.expoConfig.extra.API_URL;
       const data = await response.json();
       console.log(" Verify Response:", data);
 
-      if (data.success && data.user) {
-        await AsyncStorage.setItem("userToken", data.token ?? "");
-        await AsyncStorage.setItem("userId", data.user._id ?? "");
-        await AsyncStorage.setItem("phoneNumber", data.user.PhoneNumber ?? "");
-
-        Alert.alert("Success", "Verification successful!");
-        router.replace("/home");
+      if (data.success) {
+        await AsyncStorage.setItem("phoneNumber", phoneNumber || "");
+        Alert.alert("Success", data.message || "Verification successful!");
+        router.replace("/");
       } else {
         Alert.alert("Verification Failed", data.message || "Invalid OTP.");
       }

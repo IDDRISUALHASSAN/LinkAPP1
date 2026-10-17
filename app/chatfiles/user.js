@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import {
   View,
   Text,
@@ -18,8 +18,8 @@ export default function UserProfileScreen() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isFullView, setIsFullView] = useState(false);
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useMemo(() => new Animated.Value(1), []);
+  const fadeAnim = useMemo(() => new Animated.Value(0), []);
   const lastTap = useRef(null);
   const API_URL = "https://linkapp2.onrender.com";
 

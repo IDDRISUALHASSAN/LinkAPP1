@@ -1,24 +1,24 @@
-import React, { useState, useEffect } from "react";
-import {
-  ActivityIndicator,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-  Image,
-} from "react-native";
-import * as ContactsAPI from "expo-contacts";
-import * as Localization from "expo-localization";
-import { parsePhoneNumberFromString } from "libphonenumber-js";
-import { useRouter } from "expo-router";
 import Constants from "expo-constants";
+import * as ContactsAPI from "expo-contacts";
+import { getLocales } from "expo-localization";
+import { useRouter } from "expo-router";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
+import { useEffect, useState } from "react";
+import {
+    ActivityIndicator,
+    Image,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from "react-native";
 
 export default function Contacts() {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
-const API_URL = Constants.expoConfig.extra.API_URL;
+  const API_URL = Constants.expoConfig.extra.API_URL;
 
   const getContacts = async () => {
     try {
@@ -39,31 +39,34 @@ const API_URL = Constants.expoConfig.extra.API_URL;
         return;
       }
 
-      const countryCode = Localization.region || "GH"; // fallback to Ghana 🇬🇭
+      const countryCode = getLocales()[0]?.regionCode || "GH";
 
       // ✅ Normalize phone numbers
-   const phoneNumbers = data
-  .flatMap((c) =>
-    c.phoneNumbers?.map((p) => {
-      let raw = p.number.replace(/\s+/g, "").replace(/[^0-9+]/g, ""); // keep digits and +
-      if (!raw) return null;
+      const phoneNumbers = data
+        .flatMap(
+          (c) =>
+            c.phoneNumbers?.map((p) => {
+              let raw = p.number.replace(/\s+/g, "").replace(/[^0-9+]/g, ""); // keep digits and +
+              if (!raw) return null;
 
-      try {
-        const parsed = parsePhoneNumberFromString(raw, countryCode);
-        if (parsed && parsed.isValid()) {
-          return parsed.number;
-        } else if (raw.startsWith("0") && raw.length >= 9 && countryCode === "GH") {
-          return "+233" + raw.substring(1);
-        }
-        return null;
-      } catch {
-        return null;
-      }
-    }) || []
-  )
-  .filter((num) => num && num.length >= 10 && num.startsWith("+"));
-
-
+              try {
+                const parsed = parsePhoneNumberFromString(raw, countryCode);
+                if (parsed && parsed.isValid()) {
+                  return parsed.number;
+                } else if (
+                  raw.startsWith("0") &&
+                  raw.length >= 9 &&
+                  countryCode === "GH"
+                ) {
+                  return "+233" + raw.substring(1);
+                }
+                return null;
+              } catch {
+                return null;
+              }
+            }) || [],
+        )
+        .filter((num) => num && num.length >= 10 && num.startsWith("+"));
 
       //  Send to backend
       const response = await fetch(`${API_URL}/users`, {
@@ -113,7 +116,11 @@ const API_URL = Constants.expoConfig.extra.API_URL;
       <Text style={styles.title}>Contacts Using LinkApp</Text>
 
       {loading ? (
-        <ActivityIndicator size="large" color="#05a31dff" style={{ marginTop: 20 }} />
+        <ActivityIndicator
+          size="large"
+          color="#05a31dff"
+          style={{ marginTop: 20 }}
+        />
       ) : (
         <ScrollView style={styles.scroll}>
           {contacts.length === 0 ? (
@@ -134,7 +141,10 @@ const API_URL = Constants.expoConfig.extra.API_URL;
                   })
                 }
               >
-                <Image source={getProfileImage(contact)} style={styles.avatar} />
+                <Image
+                  source={getProfileImage(contact)}
+                  style={styles.avatar}
+                />
                 <View style={styles.info}>
                   <Text style={styles.name}>{contact.name}</Text>
                   <Text style={styles.phone}>{contact.PhoneNumber}</Text>

@@ -1,22 +1,22 @@
-import {
-  ActivityIndicator,
-  Button,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-  Alert,
-} from "react-native";
-import React, { useEffect, useState } from "react";
-import { Link, useRouter } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import Animated, { FadeInDown } from "react-native-reanimated";
-import Constants from "expo-constants";
 import { Ionicons } from "@expo/vector-icons";
-
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
+import { Link, useRouter } from "expo-router";
+import { useEffect, useState } from "react";
+import {
+    ActivityIndicator,
+    Alert,
+    Button,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
+} from "react-native";
+import Animated, { FadeInDown } from "react-native-reanimated";
+import { registerCurrentDeviceForPush } from "../services/notifications";
 
 export default function Home() {
-const API_URL = Constants.expoConfig.extra.API_URL;
+  const API_URL = Constants.expoConfig.extra.API_URL;
   const router = useRouter();
 
   const [isloading, setIsloading] = useState(true);
@@ -25,8 +25,6 @@ const API_URL = Constants.expoConfig.extra.API_URL;
   const [loadingLogin, setLoadingLogin] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-
-  
   useEffect(() => {
     const checkSession = async () => {
       const token = await AsyncStorage.getItem("token");
@@ -60,16 +58,17 @@ const API_URL = Constants.expoConfig.extra.API_URL;
       } else {
         Alert.alert("Success", "Login successful ");
 
-        
-        await AsyncStorage.setItem("token", data.token);
-        await AsyncStorage.setItem("phoneNumber", PhoneNumber);
-        console.log('token:', data.token);
-        console.log('phoneNumber:', PhoneNumber);
-        
+         await AsyncStorage.setItem("token", data.token);
+         await AsyncStorage.setItem("phoneNumber", PhoneNumber);
 
-        if (data.user?._id) {
-          await AsyncStorage.setItem("userId", data.user._id);
-        }
+         if (data.userId) {
+           await AsyncStorage.setItem("userId", data.userId);
+         }
+
+         await registerCurrentDeviceForPush(API_URL, {
+           userId: data.userId,
+           phoneNumber: PhoneNumber,
+         });
 
         // clear inputs
         setPhoneNumber("");
@@ -84,12 +83,6 @@ const API_URL = Constants.expoConfig.extra.API_URL;
       setLoadingLogin(false);
     }
   };
-
-    
-
-
-
-
 
   return (
     <View style={styles.main}>
@@ -108,8 +101,8 @@ const API_URL = Constants.expoConfig.extra.API_URL;
               placeholderTextColor="#060615ff"
               value={PhoneNumber}
               onChangeText={setPhoneNumber}
-               keyboardType="phone-pad"
-               style={styles.NameInput}
+              keyboardType="phone-pad"
+              style={styles.NameInput}
             />
 
             <Text style={styles.name}>Password</Text>
@@ -118,7 +111,7 @@ const API_URL = Constants.expoConfig.extra.API_URL;
               value={password}
               onChangeText={setPassword}
               style={styles.NameInput}
-              secureTextEntry ={!showPassword}
+              secureTextEntry={!showPassword}
             />
             <Ionicons
               name={showPassword ? "eye-off" : "eye"}
@@ -139,15 +132,21 @@ const API_URL = Constants.expoConfig.extra.API_URL;
             )}
 
             <Text style={{ marginTop: 20 }}>
-              <Link href="/signUp" style={{ color: "#2d1a1aff", fontWeight: "900" }}>
+              <Link
+                href="/signUp"
+                style={{ color: "#2d1a1aff", fontWeight: "900" }}
+              >
                 Don’t have an account? Signup
               </Link>
             </Text>
             <Text style={styles.forgotpass}>
               Forgot Password?
-              <Link href="/chat/forgotpassrest" style={{ color: "#ea1e4dff", fontWeight: "900" }}>
+              <Link
+                href="/chat/forgotpassrest"
+                style={{ color: "#ea1e4dff", fontWeight: "900" }}
+              >
                 Reset Here
-              </Link> 
+              </Link>
             </Text>
           </View>
         </Animated.View>
@@ -203,6 +202,5 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 60,
     top: 281,
-    
   },
 });
