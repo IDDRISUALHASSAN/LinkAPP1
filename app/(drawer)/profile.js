@@ -1,89 +1,185 @@
-import React, { useEffect, useState } from "react";
+import UserAvatar from "@/components/UserAvatar";
 import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-  Animated,
-} from "react-native";
-import * as ImagePicker from "expo-image-picker";
+    deleteVideo,
+    fetchUserProfile,
+    fetchUserVideos,
+    followUploader,
+    unfollowUploader,
+} from "@/services/videos";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
+import * as ImagePicker from "expo-image-picker";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import {
+    Camera,
+    Heart,
+    HeartHandshake,
+    MoreVertical,
+    Play,
+    Trash2,
+} from "lucide-react-native";
+import {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useState,
+} from "react";
+import {
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    Image,
+    Modal,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    TouchableWithoutFeedback,
+    useColorScheme,
+    View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
 const API_URL = Constants.expoConfig.extra.API_URL;
 
 export default function Profile() {
-  const [user, setUser] = useState(null);
+  const navigation = useNavigation();
+  const router = useRouter();
+  const { userId: paramUserId } = useLocalSearchParams();
+  const insets = useSafeAreaInsets();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === "dark";
+
+  const [profileUser, setProfileUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const fadeAnim = useState(new Animated.Value(0))[0];
-  
+  const [, setCurrentUserId] = useState(null);
+  const [isOwnProfile, setIsOwnProfile] = useState(false);
+  const [following, setFollowing] = useState(false);
+  const [followers, setFollowers] = useState(0);
+  const [followingCount, setFollowingCount] = useState(0);
+  const [totalLikes, setTotalLikes] = useState(0);
+  const [videos, setVideos] = useState([]);
+  const [videosLoading, setVideosLoading] = useState(false);
+  const [uploadingPic, setUploadingPic] = useState(false);
+  const [menuVideo, setMenuVideo] = useState(null);
 
-  // 🔹 Fade-in animation for smooth load
-  const fadeIn = () => {
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 600,
-      useNativeDriver: true,
-    }).start();
-  };
-
-  // 🔹 Fetch user profile
-  const fetchProfile = async () => {
+  const fetchVideos = useCallback(async (uid) => {
+    setVideosLoading(true);
     try {
-      const token = await AsyncStorage.getItem("token");
-      if (!token) return;
-
-      const res = await fetch(`${API_URL}/profile`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-
-      if (data.success) {
-        setUser(data.user);
-        fadeIn();
-      } else {
-        Alert.alert("Error", data.message || "Failed to load profile");
-      }
-    } catch (err) {
-      console.error("Profile fetch error:", err);
+      const data = await fetchUserVideos(uid);
+      setVideos(data.videos || data.data || []);
+    } catch (_err) {
+      console.error("Fetch videos error:", _err);
     } finally {
-      setLoading(false);
+      setVideosLoading(false);
     }
-  };
+  }, []);
 
-  
-  const pickImage = async () => {
-    try {
-      const { status } =
-        await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert("Permission denied", "Camera roll access is needed.");
-        return;
+  const fetchOwnProfile = useCallback(
+    async (uid) => {
+      setLoading(true);
+      try {
+        const token = await AsyncStorage.getItem("token");
+        if (!token) return;
+
+        const res = await fetch(`${API_URL}/profile`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          const user = data.user;
+          setProfileUser(user);
+          setIsOwnProfile(true);
+          setFollowers(user.followers || 0);
+          setFollowingCount(user.following || 0);
+          setTotalLikes(user.likes || 0);
+          setCurrentUserId(uid);
+          fetchVideos(uid);
+        }
+      } catch (_err) {
+        console.error("Profile fetch error:", _err);
+        Alert.alert("Error", "Failed to load profile");
+      } finally {
+        setLoading(false);
       }
+    },
+    [fetchVideos],
+  );
 
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
+  const fetchOtherProfile = useCallback(
+    async (uid) => {
+      setLoading(true);
+      try {
+        const data = await fetchUserProfile(uid);
+        const user = data.user || data;
+        setProfileUser(user);
+        setIsOwnProfile(false);
+        setFollowing(user.followed || false);
+        setFollowers(user.followers || 0);
+        setFollowingCount(user.following || 0);
+        setTotalLikes(user.likes || 0);
+        const uid2 = await AsyncStorage.getItem("userId");
+        setCurrentUserId(uid2);
+        fetchVideos(uid);
+      } catch (_err) {
+        console.error("Profile fetch error:", _err);
+        Alert.alert("Error", _err.message || "Could not load profile");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [fetchVideos],
+  );
+
+  useEffect(() => {
+    const init = async () => {
+      const uid = await AsyncStorage.getItem("userId");
+      setCurrentUserId(uid);
+
+      if (paramUserId && paramUserId !== uid) {
+        fetchOtherProfile(paramUserId);
+      } else {
+        fetchOwnProfile(uid);
+      }
+    };
+    init();
+  }, [paramUserId, fetchOwnProfile, fetchOtherProfile]);
+
+  useLayoutEffect(() => {
+    if (navigation) {
+      navigation.setOptions({
+        title: isOwnProfile
+          ? "My Profile"
+          : profileUser?.name
+            ? `${profileUser.name}'s Profile`
+            : "Profile",
       });
+    }
+  }, [navigation, isOwnProfile, profileUser]);
 
-      if (!result.canceled) {
-        uploadImage(result.assets[0].uri);
-      }
-    } catch (err) {
-      console.error("Image pick error:", err);
+  const pickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission denied", "Camera roll access is needed.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+
+    if (!result.canceled) {
+      uploadImage(result.assets[0].uri);
     }
   };
 
-  
   const uploadImage = async (uri) => {
+    setUploadingPic(true);
     try {
-      setUploading(true);
       const token = await AsyncStorage.getItem("token");
       if (!token) return;
 
@@ -105,110 +201,450 @@ export default function Profile() {
 
       const data = await res.json();
       if (data.success) {
-        setUser((prev) => ({ ...prev, profilePic: data.imageUrl }));
-        fadeIn();
-        Alert.alert(" Success", "Profile picture updated!");
+        setProfileUser((prev) => ({ ...prev, profilePic: data.imageUrl }));
+        Alert.alert("Success", "Profile picture updated!");
       } else {
-        Alert.alert(" Upload failed", data.message || "Try again.");
+        Alert.alert("Upload failed", data.message || "Try again.");
       }
-    } catch (err) {
-      console.error("Upload error:", err);
+    } catch (_err) {
+      console.error("Upload error:", _err);
       Alert.alert("Error", "Upload failed");
     } finally {
-      setUploading(false);
+      setUploadingPic(false);
     }
   };
 
-  useEffect(() => {
-    fetchProfile();
-  }, []);
+  const handleFollowToggle = async () => {
+    if (isOwnProfile || !profileUser?.id) return;
+
+    setFollowing((prev) => !prev);
+    try {
+      if (following) {
+        await unfollowUploader(profileUser.id);
+      } else {
+        await followUploader(profileUser.id);
+      }
+    } catch (_err) {
+      setFollowing((prev) => !prev);
+      console.error("Follow error:", _err);
+    }
+  };
+
+  const handleDeleteVideo = (video) => {
+    setMenuVideo(null);
+    Alert.alert("Delete video", "This action cannot be undone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deleteVideo(video.id);
+            setVideos((prev) => prev.filter((v) => v.id !== video.id));
+            setTotalLikes((prev) => Math.max(0, prev - (video.likes || 0)));
+          } catch (_err) {
+            console.error("Delete error:", _err);
+            Alert.alert("Error", "Failed to delete video");
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleVideoPress = (video) => {
+    router.push({
+      pathname: "/(screens)/video/[id]",
+      params: { id: video.id },
+    });
+  };
+
+  const handleVideoLongPress = (video) => {
+    if (isOwnProfile) {
+      setMenuVideo(video);
+    }
+  };
+
+  const renderVideoItem = ({ item }) => (
+    <TouchableOpacity
+      style={styles.videoThumb}
+      onPress={() => handleVideoPress(item)}
+      onLongPress={() => handleVideoLongPress(item)}
+      activeOpacity={0.8}
+    >
+      <Image
+        source={
+          item.thumbnailUrl
+            ? { uri: item.thumbnailUrl }
+            : require("../../assets/images/react-logo.png")
+        }
+        style={styles.videoThumbImage}
+      />
+      <View style={styles.videoOverlay}>
+        <View style={styles.overlayLeft}>
+          <Play size={14} color="#fff" />
+          <Text style={styles.overlayText}>
+            {item.playCount || item.views || 0}
+          </Text>
+        </View>
+        <View style={styles.overlayRight}>
+          <Heart size={14} color="#ff3b30" fill="#ff3b30" />
+          <Text style={styles.overlayText}>{item.likes || 0}</Text>
+        </View>
+      </View>
+
+      {isOwnProfile && (
+        <TouchableOpacity
+          style={styles.videoMenuBtn}
+          onPress={() => setMenuVideo(item)}
+        >
+          <MoreVertical size={16} color="#fff" />
+        </TouchableOpacity>
+      )}
+    </TouchableOpacity>
+  );
 
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#007bff" />
+      <View
+        style={[
+          styles.container,
+          styles.center,
+          { backgroundColor: isDark ? "#000" : "#fff", paddingTop: insets.top },
+        ]}
+      >
+        <ActivityIndicator size="large" color="#05a31dff" />
       </View>
     );
   }
 
-  if (!user) {
+  if (!profileUser) {
     return (
-      <View style={styles.center}>
-        <Text style={{ color: "red" }}>Failed to load profile</Text>
+      <View
+        style={[
+          styles.container,
+          styles.center,
+          { backgroundColor: isDark ? "#000" : "#fff", paddingTop: insets.top },
+        ]}
+      >
+        <Text style={{ color: isDark ? "#fff" : "#333" }}>
+          Failed to load profile
+        </Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <Animated.View style={[styles.avatarWrapper, { opacity: fadeAnim }]}>
-        <Image
-          source={
-            user.profilePic
-              ? { uri: user.profilePic }
-              : require("../../assets/images/profile.png")
-          }
-          style={styles.avatar}
-        />
-
-        {/* Camera icon */}
-        <TouchableOpacity style={styles.cameraIcon} onPress={pickImage}>
-          {uploading ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="camera" size={20} color="#fff" />
+    <ScrollView
+      style={[styles.scroll, { backgroundColor: isDark ? "#000" : "#fff" }]}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+        <View style={styles.avatarSection}>
+          <UserAvatar uri={profileUser.profilePic} size={120} showBorder />
+          {isOwnProfile && (
+            <TouchableOpacity
+              style={styles.cameraIcon}
+              onPress={pickImage}
+              activeOpacity={0.7}
+            >
+              {uploadingPic ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Camera size={20} color="#fff" />
+              )}
+            </TouchableOpacity>
           )}
-        </TouchableOpacity>
-      </Animated.View>
+        </View>
 
-      <Text style={styles.name}>{user?.name ?? "No Name"}</Text>
-      <Text style={styles.phone}>{user?.PhoneNumber ?? "No Phone"}</Text>
-    </View>
+        <Text style={[styles.name, { color: isDark ? "#fff" : "#333" }]}>
+          {profileUser.name || "No Name"}
+        </Text>
+
+        <View style={styles.statsRow}>
+          <View style={styles.statItem}>
+            <Text
+              style={[styles.statCount, { color: isDark ? "#fff" : "#333" }]}
+            >
+              {followers}
+            </Text>
+            <Text
+              style={[styles.statLabel, { color: isDark ? "#aaa" : "#777" }]}
+            >
+              Followers
+            </Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text
+              style={[styles.statCount, { color: isDark ? "#fff" : "#333" }]}
+            >
+              {followingCount}
+            </Text>
+            <Text
+              style={[styles.statLabel, { color: isDark ? "#aaa" : "#777" }]}
+            >
+              Following
+            </Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text
+              style={[styles.statCount, { color: isDark ? "#fff" : "#333" }]}
+            >
+              {totalLikes}
+            </Text>
+            <Text
+              style={[styles.statLabel, { color: isDark ? "#aaa" : "#777" }]}
+            >
+              Likes
+            </Text>
+          </View>
+        </View>
+
+        {!isOwnProfile && (
+          <TouchableOpacity
+            style={[
+              styles.followButton,
+              { backgroundColor: following ? "#333" : "#05a31dff" },
+            ]}
+            onPress={handleFollowToggle}
+            activeOpacity={0.8}
+          >
+            {following ? (
+              <>
+                <Heart size={18} color="#fff" />
+                <Text style={styles.followButtonText}>Following</Text>
+              </>
+            ) : (
+              <>
+                <HeartHandshake size={18} color="#fff" />
+                <Text style={styles.followButtonText}>Follow</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <View style={styles.section}>
+        <Text
+          style={[styles.sectionTitle, { color: isDark ? "#fff" : "#333" }]}
+        >
+          Videos
+        </Text>
+        {videosLoading ? (
+          <View style={styles.videosLoading}>
+            <ActivityIndicator size="large" color="#05a31dff" />
+          </View>
+        ) : videos.length === 0 ? (
+          <View style={styles.emptyVideos}>
+            <Text
+              style={[styles.emptyText, { color: isDark ? "#888" : "#999" }]}
+            >
+              No videos yet
+            </Text>
+          </View>
+        ) : (
+          <FlatList
+            data={videos}
+            keyExtractor={(item) =>
+              item.id?.toString() || Math.random().toString()
+            }
+            renderItem={renderVideoItem}
+            numColumns={3}
+            columnWrapperStyle={styles.videoGrid}
+            scrollEnabled={false}
+            showsVerticalScrollIndicator={false}
+          />
+        )}
+      </View>
+
+      <Modal
+        visible={!!menuVideo}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVideo(null)}
+      >
+        <TouchableWithoutFeedback onPress={() => setMenuVideo(null)}>
+          <View style={styles.menuOverlay}>
+            <View
+              style={[
+                styles.menuBox,
+                { backgroundColor: isDark ? "#1e1e1e" : "#fff" },
+              ]}
+            >
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => handleDeleteVideo(menuVideo)}
+              >
+                <Trash2 size={20} color="#ff3b30" />
+                <Text
+                  style={[styles.menuText, { color: isDark ? "#fff" : "#333" }]}
+                >
+                  Delete Video
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  center: {
+    justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#fff",
-    paddingTop: 50,
   },
-  center: { flex: 1, justifyContent: "center", alignItems: "center" },
-  avatarWrapper: {
+  scroll: {
+    flex: 1,
+  },
+  header: {
+    alignItems: "center",
+    paddingBottom: 20,
+  },
+  avatarSection: {
     position: "relative",
-    borderWidth: 3,
-    borderColor: "#007bff",
-    borderRadius: 80,
-    padding: 3,
-    shadowColor: "#007bff",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 5,
-  },
-  avatar: {
-    width: 130,
-    height: 130,
-    borderRadius: 65,
+    marginBottom: 16,
   },
   cameraIcon: {
     position: "absolute",
-    bottom: 5,
-    right: 5,
-    backgroundColor: "#2aed54ff",
-    borderRadius: 20,
+    bottom: 0,
+    right: 0,
+    backgroundColor: "#05a31dff",
+    borderRadius: 18,
     padding: 6,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-    elevation: 3,
+    borderWidth: 2,
+    borderColor: "#000",
   },
   name: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: "bold",
-    marginTop: 15,
-    color: "#333",
+    marginBottom: 16,
   },
-  phone: { fontSize: 16, color: "#555", marginTop: 5 },
+  statsRow: {
+    flexDirection: "row",
+    gap: 30,
+    marginBottom: 20,
+  },
+  statItem: {
+    alignItems: "center",
+  },
+  statCount: {
+    fontSize: 22,
+    fontWeight: "bold",
+  },
+  statLabel: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+  followButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 24,
+    marginTop: 8,
+  },
+  followButtonText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  section: {
+    paddingHorizontal: 12,
+    paddingTop: 16,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 12,
+    paddingHorizontal: 4,
+  },
+  videosLoading: {
+    paddingVertical: 40,
+    alignItems: "center",
+  },
+  emptyVideos: {
+    paddingVertical: 40,
+    alignItems: "center",
+  },
+  emptyText: {
+    fontSize: 15,
+  },
+  videoGrid: {
+    justifyContent: "space-between",
+  },
+  videoThumb: {
+    width: 100,
+    height: 100,
+    borderRadius: 8,
+    overflow: "hidden",
+    marginBottom: 8,
+    marginHorizontal: 4,
+    position: "relative",
+  },
+  videoThumbImage: {
+    width: "100%",
+    height: "100%",
+  },
+  videoOverlay: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.5)",
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  overlayLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  overlayRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  overlayText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  videoMenuBtn: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    borderRadius: 12,
+    padding: 4,
+  },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  menuBox: {
+    borderRadius: 12,
+    overflow: "hidden",
+    minWidth: 160,
+    elevation: 5,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  menuText: {
+    fontSize: 15,
+  },
 });

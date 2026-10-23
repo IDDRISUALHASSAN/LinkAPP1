@@ -5,14 +5,26 @@ import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
 const NOTIFICATION_CHANNEL = "default";
+let activeChatId = null;
+
+export function setActiveNotificationChat(chatId) {
+  activeChatId = chatId ? String(chatId) : null;
+}
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async (notification) => {
+    const data = notification.request?.content?.data;
+    const notificationChatId = data?.senderId || data?.chatId;
+    const isOpenChat =
+      activeChatId && String(notificationChatId) === activeChatId;
+
+    return {
+      shouldShowBanner: !isOpenChat,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    };
+  },
 });
 
 export async function registerForPushNotificationsAsync() {
@@ -42,16 +54,27 @@ export async function registerForPushNotificationsAsync() {
 
   try {
     const projectId =
+      Constants?.easConfig?.projectId ||
       Constants?.eas?.projectId ||
       Constants?.expoConfig?.eas?.projectId ||
       Constants?.expoConfig?.extra?.eas?.projectId;
+    console.log("[Push] projectId:", projectId ? "found" : "NOT FOUND");
     const { data: token } = await Notifications.getExpoPushTokenAsync(
-      projectId ? { projectId } : undefined
+      projectId ? { projectId } : undefined,
     );
+    console.log("[Push] Expo token generated:", token?.slice(0, 12) + "...");
     await AsyncStorage.setItem("pushToken", token);
     return token;
   } catch (error) {
-    console.error("Failed to get Expo push token:", error);
+    console.error("[Push] Failed to get Expo push token:", error.message || error);
+    if (
+      error.message?.includes("Expo Go") ||
+      error.message?.includes("Development build")
+    ) {
+      console.error(
+        "[Push] *** ANDROID EXPO GO LIMITATION *** Push tokens do not work in Expo Go on Android (SDK 53+). Build a development client with: eas build --profile development --platform android",
+      );
+    }
     return null;
   }
 }
@@ -59,12 +82,25 @@ export async function registerForPushNotificationsAsync() {
 export async function registerPushTokenWithBackend(
   token,
   apiUrl,
-  { userId, phoneNumber, authToken } = {},
+  { phoneNumber, authToken } = {},
 ) {
-  if (!token || !apiUrl) return false;
-  if (!userId && !phoneNumber) return false;
+  if (
+    !token ||
+    typeof token !== "string" ||
+    !/^(Expo|Exponent)PushToken\[[^\]]+\]$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      token,
+    )
+  ) {
+    console.warn(
+      "Push token registration skipped: token format is invalid.",
+      token ? `token="${token}"` : "token is null/undefined",
+    );
+    return false;
+  }
+  if (!apiUrl || !phoneNumber) return false;
 
   try {
+    console.log("[Push] Registering token for phoneNumber:", phoneNumber);
     const response = await fetch(`${apiUrl}/save-token`, {
       method: "POST",
       headers: {
@@ -74,10 +110,26 @@ export async function registerPushTokenWithBackend(
       body: JSON.stringify({ phoneNumber, expoPushToken: token }),
     });
 
-    if (!response.ok) return false;
-    return (await response.json()).success === true;
+    console.log("[Push] /save-token response status:", response.status);
+
+    if (!response.ok) {
+      const body = await response.text();
+      console.warn(
+        "[Push] /save-token failed:",
+        response.status,
+        body.substring(0, 200),
+      );
+      return false;
+    }
+    const data = await response.json();
+    console.log("[Push] /save-token success:", data.message);
+    if (data.success !== true) {
+      console.warn("Push token registration was not accepted by the server.");
+      return false;
+    }
+    return true;
   } catch (error) {
-    console.warn("Push token registration failed:", error);
+    console.warn("Push token registration request failed:", error.message);
     return false;
   }
 }
@@ -91,9 +143,23 @@ export async function registerCurrentDeviceForPush(apiUrl, user = {}) {
   const userId = user.userId || storedUserId;
   const phoneNumber = user.phoneNumber || storedPhoneNumber;
 
-  if (!userId && !phoneNumber) return false;
+  console.log("[Push] registerCurrentDeviceForPush", {
+    hasUserId: !!userId,
+    hasPhoneNumber: !!phoneNumber,
+    hasAuthToken: !!authToken,
+    hasApiUrl: !!apiUrl,
+  });
+
+  if (!userId && !phoneNumber) {
+    console.log("[Push] No userId or phoneNumber — not registered yet");
+    return false;
+  }
 
   const pushToken = await registerForPushNotificationsAsync();
+  if (!pushToken) {
+    console.warn("[Push] Could not obtain Expo push token — skipping registration");
+    return false;
+  }
   return registerPushTokenWithBackend(pushToken, apiUrl, {
     userId,
     phoneNumber,

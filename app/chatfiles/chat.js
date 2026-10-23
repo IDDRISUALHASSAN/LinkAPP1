@@ -28,6 +28,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { io } from "socket.io-client";
+import { setActiveNotificationChat } from "../services/notifications";
 
 const { width, height } = Dimensions.get("window");
 
@@ -205,11 +206,30 @@ export default function Chat() {
 
   useEffect(() => {
     if (!userId || !receiverId) return;
+    setActiveNotificationChat(receiverId);
     const newSocket = io(`${API_URL}`, { transports: ["websocket"] });
     socketRef.current = newSocket;
-    newSocket.emit("login", userId);
-    newSocket.emit("viewChat", { phoneNumber: userId, chatWith: receiverId });
-    newSocket.emit("loadHistory", { from: userId, to: receiverId });
+
+    const sendPresence = (isActive) => {
+      newSocket.emit("appState", {
+        phoneNumber: userId,
+        state: isActive ? "active" : "background",
+      });
+      if (isActive) {
+        newSocket.emit("viewChat", {
+          phoneNumber: userId,
+          chatWith: receiverId,
+        });
+        newSocket.emit("loadHistory", { from: userId, to: receiverId });
+      } else {
+        newSocket.emit("leaveChat", { phoneNumber: userId });
+      }
+    };
+
+    newSocket.on("connect", () => {
+      newSocket.emit("login", userId);
+      sendPresence(AppState.currentState === "active");
+    });
 
     newSocket.on("history", (history) => {
       setMessages(history || []);
@@ -236,11 +256,16 @@ export default function Chat() {
       setMessages((prev) => prev.filter((m) => m._id !== deletedId));
     });
 
-    // Notify the backend when the app transitions between foreground / background
     const handleAppStateChange = (nextAppState) => {
-      const state =
-        nextAppState === "active" ? "active" : "background";
-      newSocket.emit("appState", { phoneNumber: userId, state });
+      const isActive = nextAppState === "active";
+      sendPresence(isActive);
+      // Critical: clear activeChatId when the app is backgrounded so the
+      // notification handler does NOT suppress incoming banners from this chat.
+      if (isActive) {
+        setActiveNotificationChat(receiverId);
+      } else {
+        setActiveNotificationChat(null);
+      }
     };
     const appStateListener = AppState.addEventListener(
       "change",
@@ -249,6 +274,7 @@ export default function Chat() {
 
     return () => {
       newSocket.emit("leaveChat", { phoneNumber: userId });
+      setActiveNotificationChat(null);
       appStateListener.remove();
       newSocket.disconnect();
     };
@@ -440,11 +466,11 @@ export default function Chat() {
         </View>
       )}
 
-     <KeyboardAvoidingView
-  style={styles.container}
-  behavior={Platform.OS === "ios" ? "padding" : "height"}
-  keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
->
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={0}
+      >
         <View style={styles.headerContainer}>
           <Image
             source={
@@ -482,15 +508,15 @@ export default function Chat() {
           }
         />
 
-       <Animated.View
-  style={[
-    styles.inputContainer,
-    {
-      paddingBottom: Math.max(insets.bottom, 10),
-      transform: [{ translateX: shakeAnim }],
-    },
-  ]}
->
+        <Animated.View
+          style={[
+            styles.inputContainer,
+            {
+              paddingBottom: Math.max(insets.bottom, 10),
+              transform: [{ translateX: shakeAnim }],
+            },
+          ]}
+        >
           <TextInput
             style={styles.textInput}
             value={input}
@@ -649,23 +675,23 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "#ddd",
   },
- textInput: {
-  flex: 1,
-  minHeight: 42,
-  maxHeight: 120,
-  fontSize: 16,
-  lineHeight: 22,
-  paddingHorizontal: 14,
-  paddingVertical: 8,
-  backgroundColor: "#fff",
-  borderRadius: 22,
-  borderWidth: 1,
-  borderColor: "#e5e5e5",
-  marginRight: 8,
-  color: "#111",
-  textAlignVertical: "center",
-  includeFontPadding: false,
-},
+  textInput: {
+    flex: 1,
+    minHeight: 42,
+    maxHeight: 120,
+    fontSize: 16,
+    lineHeight: 22,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "#fff",
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "#e5e5e5",
+    marginRight: 8,
+    color: "#111",
+    textAlignVertical: "center",
+    includeFontPadding: false,
+  },
   iconButton: {
     width: 38,
     height: 38,

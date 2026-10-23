@@ -1,19 +1,35 @@
 import { Tabs } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+import { Home, Play } from "lucide-react-native";
 
 export default function TabLayout() {
   return (
-    <Tabs screenOptions={{ headerShown: false }}>
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: "#05a31dff",
+        tabBarInactiveTintColor: "#888",
+        tabBarStyle: { backgroundColor: "#1a1a1a" },
+        tabBarLabelStyle: { fontSize: 12, fontWeight: "600" },
+      }}
+    >
       <Tabs.Screen
         name="home"
         options={{
-          title: "Home",
+          title: "Chats",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home-outline" size={size} color={color} />
+            <Home size={size} color={color} />
           ),
         }}
       />
-     
+      <Tabs.Screen
+        name="explore"
+        options={{
+          title: "Videos",
+          tabBarIcon: ({ color, size }) => (
+            <Play size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
