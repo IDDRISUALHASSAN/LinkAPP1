@@ -1,37 +1,27 @@
-import React, { useState, useRef, useEffect } from "react";
+import { Heart, MoreVertical, Reply, Trash2, X, Check, ChevronDown, Edit3 } from "lucide-react-native";
+import { useRef, useState } from "react";
+import { useRouter } from "expo-router";
 import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Alert,
-  Modal,
-  TextInput,
-  FlatList,
-  ActivityIndicator,
+    ActivityIndicator,
+    Alert,
+    Modal,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    useColorScheme,
+    View
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useColorScheme } from "react-native";
-import {
-  Heart,
-  Reply,
-  MoreVertical,
-  Edit3,
-  Trash2,
-  Send,
-  X,
-  ChevronDown,
-} from "lucide-react-native";
 import { Colors } from "../constants/theme";
-import UserAvatar from "./UserAvatar";
 import {
-  postComment,
-  likeComment,
-  unlikeComment,
-  editComment,
-  deleteComment,
-  fetchReplies,
+    deleteComment,
+    editComment,
+    fetchReplies,
+    likeComment,
+    unlikeComment
 } from "../services/comments";
+import { isAuthError, clearAuth } from "../services/api";
+import UserAvatar from "./UserAvatar";
 
 function formatTimeAgo(timestamp) {
   if (!timestamp) return "";
@@ -70,28 +60,55 @@ export default function CommentItem({
   const [showReplies, setShowReplies] = useState(false);
   const [replies, setReplies] = useState([]);
   const [loadingReplies, setLoadingReplies] = useState(false);
-  const [replyCount, setReplyCount] = useState(comment.replyCount || 0);
+  const likingRef = useRef(false);
   const maxDepth = 2;
+
+  const router = useRouter();
+
+  const effectiveReplies = comment.replies?.length > 0 ? comment.replies : replies;
+  const effectiveReplyCount = comment.replyCount || 0;
+  const shouldShowViewReplies = effectiveReplyCount > 0 && depth < maxDepth;
+
+  const handleAuthError = async () => {
+    await clearAuth();
+    Alert.alert(
+      "Session Expired",
+      "Your session has expired. Please log in again.",
+      [{ text: "OK", onPress: () => router.replace("/(screens)") }],
+    );
+  };
 
   const isOwnComment = currentUserId === comment.userId;
   const canEdit = isOwnComment;
   const canDelete = isOwnComment || currentUserId === videoOwnerId;
 
-  const handleLike = () => {
-    const newLiked = !liked;
-    setLiked(newLiked);
-    setLikesCount((c) => c + (newLiked ? 1 : -1));
+  const handleLike = async () => {
+    if (likingRef.current) return;
+    likingRef.current = true;
 
-    if (newLiked) {
-      likeComment(comment.id).catch(() => {
-        setLiked(!newLiked);
-        setLikesCount((c) => c - (newLiked ? 1 : -1));
-      });
-    } else {
-      unlikeComment(comment.id).catch(() => {
-        setLiked(!newLiked);
-        setLikesCount((c) => c + (newLiked ? 1 : -1));
-      });
+    const previousLiked = Boolean(liked);
+    const previousLikesCount = Number(likesCount) || 0;
+    const newLiked = !previousLiked;
+    setLiked(newLiked);
+    setLikesCount(Math.max(0, previousLikesCount + (newLiked ? 1 : -1)));
+
+    try {
+      if (newLiked) {
+        await likeComment(comment.id);
+      } else {
+        await unlikeComment(comment.id);
+      }
+    } catch (error) {
+      console.error("Toggle comment like error:", error);
+      setLiked(previousLiked);
+      setLikesCount(previousLikesCount);
+      if (isAuthError(error)) {
+        handleAuthError();
+      } else {
+        Alert.alert("Like failed", error.message || "Please try again.");
+      }
+    } finally {
+      likingRef.current = false;
     }
   };
 
@@ -107,31 +124,35 @@ export default function CommentItem({
       onUpdate?.(comment.id, { text: editText, edited: true });
       setIsEditing(false);
     } catch (err) {
-      Alert.alert("Error", "Failed to edit comment");
+      if (isAuthError(err)) {
+        handleAuthError();
+      } else {
+        Alert.alert("Error", "Failed to edit comment");
+      }
     }
   };
 
   const handleDelete = () => {
     setShowMenu(false);
-    Alert.alert(
-      "Delete comment",
-      "This action cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await deleteComment(comment.id);
-              onDelete?.(comment.id);
-            } catch (err) {
+    Alert.alert("Delete comment", "This action cannot be undone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deleteComment(comment.id);
+            onDelete?.(comment.id);
+          } catch (err) {
+            if (isAuthError(err)) {
+              handleAuthError();
+            } else {
               Alert.alert("Error", "Failed to delete comment");
             }
-          },
+          }
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const handleReply = () => {
@@ -152,21 +173,16 @@ export default function CommentItem({
       setShowReplies(true);
     } catch (err) {
       console.error("Load replies error:", err);
+      if (isAuthError(err)) handleAuthError();
     } finally {
       setLoadingReplies(false);
     }
-  };
-
-  const shouldShowViewReplies = replyCount > 0 && depth < maxDepth;
+   };
 
   return (
     <View style={[styles.container, { paddingLeft: 12 + depth * 16 }]}>
       <View style={styles.row}>
-        <UserAvatar
-          uri={comment.profilePic}
-          size={32}
-          style={styles.avatar}
-        />
+        <UserAvatar uri={comment.profilePic} size={32} style={styles.avatar} />
 
         <View style={styles.content}>
           <View
@@ -205,11 +221,21 @@ export default function CommentItem({
               </View>
             ) : (
               <>
-                <Text style={[styles.commentText, { color: isDark ? "#e0e0e0" : "#333" }]}>
+                <Text
+                  style={[
+                    styles.commentText,
+                    { color: isDark ? "#e0e0e0" : "#333" },
+                  ]}
+                >
                   {comment.text}
                 </Text>
                 {comment.edited && (
-                  <Text style={[styles.editedLabel, { color: isDark ? "#999" : "#777" }]}>
+                  <Text
+                    style={[
+                      styles.editedLabel,
+                      { color: isDark ? "#999" : "#777" },
+                    ]}
+                  >
                     {"  edited"}
                   </Text>
                 )}
@@ -218,14 +244,21 @@ export default function CommentItem({
           </View>
 
           <View style={styles.metaRow}>
-            <Text style={[styles.timeText, { color: isDark ? "#888" : "#888" }]}>
+            <Text
+              style={[styles.timeText, { color: isDark ? "#888" : "#888" }]}
+            >
               {formatTimeAgo(comment.createdAt)}
             </Text>
 
             {showReply && depth < maxDepth && (
               <TouchableOpacity onPress={handleReply} style={styles.metaBtn}>
                 <Reply size={14} color={isDark ? "#aaa" : "#999"} />
-                <Text style={[styles.replyText, { color: isDark ? "#aaa" : "#999" }]}>
+                <Text
+                  style={[
+                    styles.replyText,
+                    { color: isDark ? "#aaa" : "#999" },
+                  ]}
+                >
                   Reply
                 </Text>
               </TouchableOpacity>
@@ -237,16 +270,26 @@ export default function CommentItem({
                 style={styles.metaBtn}
               >
                 {loadingReplies ? (
-                  <ActivityIndicator size="small" color={isDark ? "#aaa" : "#999"} />
+                  <ActivityIndicator
+                    size="small"
+                    color={isDark ? "#aaa" : "#999"}
+                  />
                 ) : (
-                  <Text style={[styles.replyText, { color: isDark ? "#aaa" : "#999" }]}>
-                    View {!showReplies ? replyCount : 0}{" "}
-                    {replyCount === 1 ? "reply" : "replies"}
+                  <Text
+                    style={[
+                      styles.replyText,
+                      { color: isDark ? "#aaa" : "#999" },
+                    ]}
+                  >
+                    View {!showReplies ? effectiveReplyCount : 0}{" "}
+                    {effectiveReplyCount === 1 ? "reply" : "replies"}
                     <ChevronDown
                       size={12}
                       color={isDark ? "#aaa" : "#999"}
                       style={{
-                        transform: [{ rotate: showReplies ? "180deg" : "0deg" }],
+                        transform: [
+                          { rotate: showReplies ? "180deg" : "0deg" },
+                        ],
                       }}
                     />
                   </Text>
@@ -294,9 +337,9 @@ export default function CommentItem({
       </View>
 
       {/* Replies */}
-      {showReplies && replies.length > 0 && (
+      {(showReplies || comment?.replies?.length > 0) && (
         <View style={{ marginTop: 4 }}>
-          {replies.map((reply) => (
+          {effectiveReplies.map((reply) => (
             <CommentItem
               key={reply.id}
               comment={reply}
@@ -321,11 +364,18 @@ export default function CommentItem({
           activeOpacity={1}
           onPress={() => setShowMenu(false)}
         >
-          <View style={[styles.menuBox, { backgroundColor: isDark ? "#1e1e1e" : "#fff" }]}>
+          <View
+            style={[
+              styles.menuBox,
+              { backgroundColor: isDark ? "#1e1e1e" : "#fff" },
+            ]}
+          >
             {canEdit && !isEditing && (
               <TouchableOpacity style={styles.menuItem} onPress={handleEdit}>
                 <Edit3 size={20} color={isDark ? "#fff" : "#333"} />
-                <Text style={[styles.menuText, { color: isDark ? "#fff" : "#333" }]}>
+                <Text
+                  style={[styles.menuText, { color: isDark ? "#fff" : "#333" }]}
+                >
                   Edit
                 </Text>
               </TouchableOpacity>

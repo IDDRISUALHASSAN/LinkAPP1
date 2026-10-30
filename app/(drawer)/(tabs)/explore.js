@@ -1,23 +1,28 @@
-import React, { useState, useEffect, useCallback } from "react";
-import {
-  View,
-  FlatList,
-  StyleSheet,
-  TouchableOpacity,
-  Text,
-  ActivityIndicator,
-  Dimensions,
-} from "react-native";
-import { useRouter, useFocusEffect } from "expo-router";
-import { Plus } from "lucide-react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useFocusEffect, useRouter } from "expo-router";
+import { Plus } from "lucide-react-native";
+import { useCallback, useEffect, useState } from "react";
+import {
+    ActivityIndicator,
+    Dimensions,
+    FlatList,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+    Alert,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { useVideoFeed } from "@/hooks/useVideoFeed";
-import VideoItem from "@/components/VideoItem";
 import CommentSheet from "@/components/CommentSheet";
-import { followUploader, unfollowUploader } from "@/services/videos";
+import VideoItem from "@/components/VideoItem";
+import useVideoFeed from "@/hooks/useVideoFeed";
+import { followUploader, unfollowUploader, normalizeVideoId } from "@/services/videos";
+import { clearAuth } from "@/services/api";
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+const VIEWABILITY_CONFIG = {
+  viewAreaCoveragePercentThreshold: 50,
+};
 
 const ListFooter = ({ loadingMore }) =>
   loadingMore ? (
@@ -29,7 +34,9 @@ const ListFooter = ({ loadingMore }) =>
 const EmptyState = ({ loading, refreshing, error, router }) =>
   !loading && !refreshing && !error ? (
     <View style={[styles.emptyContainer, { height: SCREEN_HEIGHT }]}>
-      <Text style={styles.emptyText}>No videos yet. Be the first to upload!</Text>
+      <Text style={styles.emptyText}>
+        No videos yet. Be the first to upload!
+      </Text>
       <TouchableOpacity
         style={styles.emptyBtn}
         onPress={() => router.push("/(screens)/upload")}
@@ -54,6 +61,15 @@ export default function Explore() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  const handleAuthError = useCallback(async (_err) => {
+    await clearAuth();
+    Alert.alert(
+      "Session Expired",
+      "Your session has expired. Please log in again.",
+      [{ text: "OK", onPress: () => router.replace("/(screens)") }],
+    );
+  }, [router]);
+
   const {
     videos,
     loading,
@@ -65,7 +81,7 @@ export default function Explore() {
     loadMore,
     toggleLike,
     setVideos,
-  } = useVideoFeed();
+  } = useVideoFeed(handleAuthError);
 
   const [visibleIndex, setVisibleIndex] = useState(0);
   const [currentUserId, setCurrentUserId] = useState(null);
@@ -88,18 +104,11 @@ export default function Explore() {
     }, [refresh]),
   );
 
-  const viewabilityConfig = {
-    viewAreaCoveragePercentThreshold: 50,
-  };
-
-  const handleViewableItemsChanged = useCallback(
-    ({ viewableItems }) => {
-      if (viewableItems.length > 0) {
-        setVisibleIndex(viewableItems[0].index);
-      }
-    },
-    [],
-  );
+  const handleViewableItemsChanged = useCallback(({ viewableItems }) => {
+    if (viewableItems.length > 0) {
+      setVisibleIndex(viewableItems[0].index);
+    }
+  }, []);
 
   const handleLike = useCallback(
     (videoId) => {
@@ -108,11 +117,34 @@ export default function Explore() {
     [toggleLike],
   );
 
-  const handleComment = useCallback((video) => {
-    setCurrentVideoId(video.id);
-    setCurrentVideoOwnerId(video.uploader?.id);
-    setCommentSheetVisible(true);
-  }, []);
+  const handleComment = useCallback(
+    (videoId) => {
+      if (!videoId) return;
+
+      const video = videos.find(
+        (item) => String(item.id) === String(videoId),
+      );
+      if (!video) return;
+
+      setCurrentVideoId(video.id);
+      setCurrentVideoOwnerId(video.uploader?.id ?? null);
+      setCommentSheetVisible(true);
+    },
+    [videos],
+  );
+
+  const handleShare = useCallback(
+    (video) => {
+      setVideos((prev) =>
+        prev.map((v) =>
+          normalizeVideoId(v.id) === normalizeVideoId(video.id)
+            ? { ...v, shares: (v.shares || 0) + 1 }
+            : v,
+        ),
+      );
+    },
+    [setVideos],
+  );
 
   const handleFollow = useCallback(
     async (uploaderId) => {
@@ -134,7 +166,10 @@ export default function Explore() {
           );
         }
       } catch (_err) {
-        setIsFollowing((prev) => ({ ...prev, [uploaderId]: !prev[uploaderId] }));
+        setIsFollowing((prev) => ({
+          ...prev,
+          [uploaderId]: !prev[uploaderId],
+        }));
         console.error("Follow error:", _err);
       }
     },
@@ -153,16 +188,17 @@ export default function Explore() {
   );
 
   const renderItem = ({ item, index }) => (
-    <VideoItem
-      video={item}
-      isVisible={index === visibleIndex}
-      onLike={handleLike}
-      onComment={() => handleComment(item)}
-      onFollow={handleFollow}
-      onProfilePress={handleProfilePress}
-      currentUserId={currentUserId}
-      key={item.id}
-    />
+      <VideoItem
+        video={item}
+        isVisible={index === visibleIndex}
+        onLike={handleLike}
+        onComment={handleComment}
+        onShare={handleShare}
+        onFollow={handleFollow}
+        onProfilePress={handleProfilePress}
+        currentUserId={currentUserId}
+        key={item.id}
+      />
   );
 
   const handleLoadMore = () => {
@@ -183,9 +219,11 @@ export default function Explore() {
         <FlatList
           data={videos}
           renderItem={renderItem}
-          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
+          keyExtractor={(item) =>
+            item.id?.toString() || Math.random().toString()
+          }
           onViewableItemsChanged={handleViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
+          viewabilityConfig={VIEWABILITY_CONFIG}
           snapToInterval={SCREEN_HEIGHT - insets.top}
           decelerationRate="fast"
           snapToAlignment="start"
@@ -227,6 +265,19 @@ export default function Explore() {
           videoId={currentVideoId}
           videoOwnerId={currentVideoOwnerId}
           currentUserId={currentUserId}
+          onCommentAdded={() => {
+            const video = videos.find(
+              (item) =>
+                normalizeVideoId(item.id) === normalizeVideoId(currentVideoId),
+            );
+            setVideos((prev) =>
+              prev.map((v) =>
+                normalizeVideoId(v.id) === normalizeVideoId(currentVideoId)
+                  ? { ...v, comments: (video?.comments || 0) + 1 }
+                  : v,
+              ),
+            );
+          }}
         />
       )}
     </View>

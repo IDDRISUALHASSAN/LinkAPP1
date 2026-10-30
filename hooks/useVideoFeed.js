@@ -1,7 +1,16 @@
-import { useState, useCallback } from "react";
-import { fetchVideos, likeVideo, unlikeVideo } from "../services/videos";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert } from "react-native";
+import {
+  fetchVideos,
+  likeVideo,
+  normalizeVideo,
+  normalizeVideoId,
+  unlikeVideo,
+} from "../services/videos";
+import { isAuthError } from "../services/api";
 
-export default function useVideoFeed() {
+export default function useVideoFeed(onAuthError) {
+  const likingVideoIds = useRef(new Set());
   const [videos, setVideos] = useState([]);
   const [cursor, setCursor] = useState(null);
   const [hasMore, setHasMore] = useState(true);
@@ -26,7 +35,12 @@ export default function useVideoFeed() {
 
       try {
         const data = await fetchVideos(reset ? null : cursor, 10);
-        const newVideos = data.videos || data.data || [];
+        const rawVideos = Array.isArray(data.videos)
+          ? data.videos
+          : Array.isArray(data.data)
+            ? data.data
+            : [];
+        const newVideos = rawVideos.map(normalizeVideo).filter(Boolean);
         const nextCursor = data.nextCursor || data.cursor || null;
 
         if (reset) {
@@ -37,9 +51,12 @@ export default function useVideoFeed() {
         setCursor(nextCursor);
         setHasMore(!!nextCursor);
         setError(null);
-      } catch (_err) {
-        console.error("Load videos error:", _err);
-        setError(_err.message || "Failed to load videos");
+      } catch (err) {
+        console.error("Load videos error:", err);
+        setError(err.message || "Failed to load videos");
+        if (isAuthError(err) && onAuthError) {
+          onAuthError(err);
+        }
         if (reset) setRefreshing(false);
         if (!reset) setLoadingMore(false);
       } finally {
@@ -48,42 +65,64 @@ export default function useVideoFeed() {
         if (!reset) setLoadingMore(false);
       }
     },
-    [cursor, hasMore, loadingMore],
+    [cursor, hasMore, loadingMore, onAuthError],
   );
+
+  const loadVideosRef = useRef(loadVideos);
+  useEffect(() => {
+    loadVideosRef.current = loadVideos;
+  }, [loadVideos]);
+  const loadMore = useCallback(() => loadVideosRef.current(false), []);
+  const refresh = useCallback(() => loadVideosRef.current(true), []);
 
   const toggleLike = useCallback(
     async (videoId) => {
-      const prev = videos.find((v) => v.id === videoId);
-      if (!prev) return;
+      if (!videoId || likingVideoIds.current.has(videoId)) return;
+      const targetId = normalizeVideoId(videoId);
+      const prev = videos.find(
+        (video) => normalizeVideoId(video.id) === targetId,
+      );
+      if (!prev?.id || !targetId) return;
 
-      const newLiked = !prev.liked;
-      const newLikes = prev.likes + (newLiked ? 1 : -1);
+      likingVideoIds.current.add(targetId);
+      const wasLiked = Boolean(prev.liked);
+      const previousLikes = Number(prev.likes) || 0;
+      const newLiked = !wasLiked;
+      const newLikes = Math.max(0, previousLikes + (newLiked ? 1 : -1));
 
       setVideos((prevVideos) =>
-        prevVideos.map((v) =>
-          v.id === videoId
-            ? { ...v, liked: newLiked, likes: newLikes }
-            : v,
+        prevVideos.map((video) =>
+          normalizeVideoId(video.id) === targetId
+            ? { ...video, liked: newLiked, likes: newLikes }
+            : video,
         ),
       );
 
       try {
         if (newLiked) {
-          await likeVideo(videoId);
+          await likeVideo(targetId);
         } else {
-          await unlikeVideo(videoId);
+          await unlikeVideo(targetId);
         }
-      } catch (_err) {
+      } catch (err) {
+        console.error("Toggle video like error:", err);
         setVideos((prevVideos) =>
-          prevVideos.map((v) =>
-            v.id === videoId
-              ? { ...v, liked: prev.liked, likes: prev.likes }
-              : v,
+          prevVideos.map((video) =>
+            normalizeVideoId(video.id) === targetId
+              ? { ...video, liked: wasLiked, likes: previousLikes }
+              : video,
           ),
         );
+        if (isAuthError(err) && onAuthError) {
+          onAuthError(err);
+        } else {
+          Alert.alert("Like failed", err.message || "Please try again.");
+        }
+      } finally {
+        likingVideoIds.current.delete(targetId);
       }
     },
-    [videos],
+    [videos, onAuthError],
   );
 
   const removeVideo = useCallback((videoId) => {
@@ -104,8 +143,8 @@ export default function useVideoFeed() {
     hasMore,
     error,
     loadVideos,
-    loadMore: () => loadVideos(false),
-    refresh: () => loadVideos(true),
+    loadMore,
+    refresh,
     toggleLike,
     removeVideo,
     updateVideo,

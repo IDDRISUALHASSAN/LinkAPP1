@@ -1,31 +1,31 @@
-import React, { useState, useRef } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
-  Alert,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
-  useColorScheme,
-} from "react-native";
-import { useRouter } from "expo-router";
-import {
-  ChevronLeft,
-  Image as ImageIcon,
-  Play,
-  Music,
-} from "lucide-react-native";
-import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import { cacheDirectory } from "expo-file-system";
+import * as ImagePicker from "expo-image-picker";
+import { useRouter } from "expo-router";
+import {
+    ChevronLeft,
+    Image as ImageIcon,
+    Music,
+    Play,
+} from "lucide-react-native";
+import { useRef, useState } from "react";
+import {
+    Alert,
+    KeyboardAvoidingView,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    useColorScheme,
+    View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import TrimBar from "@/components/TrimBar";
 import MusicPicker from "@/components/MusicPicker";
-import { uploadWithProgress } from "@/services/api";
+import TrimBar from "@/components/TrimBar";
+import { uploadWithProgress, isAuthError, clearAuth } from "@/services/api";
 
 const STEPS = {
   PICK: "pick",
@@ -38,6 +38,14 @@ const MAX_CAPTION_LENGTH = 300;
 
 export default function Upload() {
   const router = useRouter();
+  const handleAuthError = async () => {
+    await clearAuth();
+    Alert.alert(
+      "Session Expired",
+      "Your session has expired. Please log in again.",
+      [{ text: "OK", onPress: () => router.replace("/(screens)") }],
+    );
+  };
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
@@ -45,6 +53,9 @@ export default function Upload() {
   const [step, setStep] = useState(STEPS.PICK);
   const [videoUri, setVideoUri] = useState(null);
   const [localVideoUri, setLocalVideoUri] = useState(null);
+  const [videoFile, setVideoFile] = useState(null);
+  const [videoFileName, setVideoFileName] = useState(null);
+  const [videoMimeType, setVideoMimeType] = useState(null);
   const [startSec, setStartSec] = useState(0);
   const [endSec, setEndSec] = useState(0);
   const [caption, setCaption] = useState("");
@@ -59,22 +70,19 @@ export default function Upload() {
 
   const handleBack = () => {
     if (uploading) {
-      Alert.alert(
-        "Cancel upload?",
-        "Your video will not be uploaded.",
-        [
-          { text: "Continue uploading", style: "cancel" },
-          {
-            text: "Cancel",
-            style: "destructive",
-            onPress: cancelUpload,
-          },
-        ],
-      );
+      Alert.alert("Cancel upload?", "Your video will not be uploaded.", [
+        { text: "Continue uploading", style: "cancel" },
+        {
+          text: "Cancel",
+          style: "destructive",
+          onPress: cancelUpload,
+        },
+      ]);
     } else if (step === STEPS.TRIM) {
       setStep(STEPS.PICK);
       setVideoUri(null);
       setLocalVideoUri(null);
+      setVideoFile(null);
     } else if (step === STEPS.CAPTION) {
       setStep(STEPS.TRIM);
     } else {
@@ -97,14 +105,18 @@ export default function Upload() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      mediaTypes: ["videos"],
       videoMaxDuration: 120,
     });
 
     if (!result.canceled && result.assets?.[0]) {
-      const uri = await getLocalPath(result.assets[0].uri);
+      const asset = result.assets[0];
+      const uri = await getLocalPath(asset.uri);
       setVideoUri(uri);
       setLocalVideoUri(uri);
+      setVideoFile(asset.file || null);
+      setVideoFileName(asset.fileName || asset.file?.name || null);
+      setVideoMimeType(asset.mimeType || asset.file?.type || null);
       setStep(STEPS.TRIM);
       setStartSec(0);
       setEndSec(0);
@@ -120,21 +132,26 @@ export default function Upload() {
 
     try {
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        mediaTypes: ["videos"],
         videoMaxDuration: 120,
       });
 
       if (!result.canceled && result.assets?.[0]) {
-        const uri = await getLocalPath(result.assets[0].uri);
+        const asset = result.assets[0];
+        const uri = await getLocalPath(asset.uri);
         setVideoUri(uri);
         setLocalVideoUri(uri);
+        setVideoFile(asset.file || null);
         setStep(STEPS.TRIM);
         setStartSec(0);
         setEndSec(0);
       }
     } catch (_err) {
       console.error("Camera error:", _err);
-      Alert.alert("Error", "Could not open camera. Please try picking from library.");
+      Alert.alert(
+        "Error",
+        "Could not open camera. Please try picking from library.",
+      );
     }
   };
 
@@ -180,11 +197,27 @@ export default function Upload() {
 
     try {
       const formData = new FormData();
-      formData.append("video", {
-        uri: localVideoUri,
-        name: "upload.mp4",
-        type: "video/mp4",
-      });
+      if (Platform.OS === "web") {
+        let browserVideoFile = videoFile;
+        if (!browserVideoFile) {
+          const videoResponse = await fetch(localVideoUri);
+          if (!videoResponse.ok) {
+            throw new Error("Could not read the selected video file.");
+          }
+          browserVideoFile = await videoResponse.blob();
+        }
+        formData.append(
+          "video",
+          browserVideoFile,
+          videoFileName || videoFile?.name || "upload.mp4",
+        );
+      } else {
+        formData.append("video", {
+          uri: localVideoUri,
+          name: videoFileName || "upload.mp4",
+          type: videoMimeType || "video/mp4",
+        });
+      }
       formData.append("caption", caption || "");
       formData.append("startSec", String(startSec));
       formData.append("endSec", String(endSec));
@@ -193,9 +226,13 @@ export default function Upload() {
       }
       formData.append("musicVolume", String(musicVolume / 100));
 
-      const { data } = await uploadWithProgress(formData, (progress) => {
-        setUploadProgress(progress);
-      }, cancelRef);
+      const { data } = await uploadWithProgress(
+        formData,
+        (progress) => {
+          setUploadProgress(progress);
+        },
+        cancelRef,
+      );
 
       if (data.success !== false) {
         Alert.alert("Success", "Video uploaded!", [
@@ -210,6 +247,10 @@ export default function Upload() {
         throw new Error(data.message || "Upload failed");
       }
     } catch (error) {
+      if (isAuthError(error)) {
+        handleAuthError();
+        return;
+      }
       if (error.message && error.message.includes("aborted")) {
         setUploadError("Upload cancelled");
       } else {
@@ -222,6 +263,10 @@ export default function Upload() {
 
   const handleRetry = () => {
     doUpload();
+  };
+
+  const handleDone = () => {
+    router.back();
   };
 
   const renderHeader = () => {
@@ -251,7 +296,9 @@ export default function Upload() {
           disabled={uploading}
         >
           <ChevronLeft size={24} color={isDark ? "#fff" : "#333"} />
-          <Text style={[styles.headerBackText, { color: isDark ? "#fff" : "#333" }]}>
+          <Text
+            style={[styles.headerBackText, { color: isDark ? "#fff" : "#333" }]}
+          >
             {canGoBack ? "Back" : "Cancel"}
           </Text>
         </TouchableOpacity>
@@ -274,7 +321,9 @@ export default function Upload() {
           onPress={pickFromLibrary}
         >
           <ImageIcon size={48} color={isDark ? "#fff" : "#333"} />
-          <Text style={[styles.pickOptionText, { color: isDark ? "#fff" : "#333" }]}>
+          <Text
+            style={[styles.pickOptionText, { color: isDark ? "#fff" : "#333" }]}
+          >
             Pick from Library
           </Text>
         </TouchableOpacity>
@@ -287,7 +336,9 @@ export default function Upload() {
           onPress={recordVideo}
         >
           <Play size={48} color={isDark ? "#fff" : "#333"} />
-          <Text style={[styles.pickOptionText, { color: isDark ? "#fff" : "#333" }]}>
+          <Text
+            style={[styles.pickOptionText, { color: isDark ? "#fff" : "#333" }]}
+          >
             Record Video
           </Text>
         </TouchableOpacity>
@@ -302,15 +353,14 @@ export default function Upload() {
     return (
       <>
         {videoUri && (
-          <TrimBar
-            videoUri={videoUri}
-            onTrimChange={handleTrimChange}
-          />
+          <TrimBar videoUri={videoUri} onTrimChange={handleTrimChange} />
         )}
 
         <View style={styles.trimFooter}>
           <View style={styles.trimInfo}>
-            <Text style={[styles.trimInfoText, { color: isDark ? "#aaa" : "#777" }]}>
+            <Text
+              style={[styles.trimInfoText, { color: isDark ? "#aaa" : "#777" }]}
+            >
               Selected: {selectedLength.toFixed(1)}s (max 120s, min 1s)
             </Text>
             <Text
@@ -345,7 +395,9 @@ export default function Upload() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <View style={styles.captionSection}>
-        <Text style={[styles.captionLabel, { color: isDark ? "#fff" : "#333" }]}>
+        <Text
+          style={[styles.captionLabel, { color: isDark ? "#fff" : "#333" }]}
+        >
           Caption
         </Text>
         <TextInput
@@ -368,7 +420,14 @@ export default function Upload() {
           <Text
             style={[
               styles.charCounter,
-              { color: caption.length >= MAX_CAPTION_LENGTH ? "#ff3b30" : isDark ? "#888" : "#999" },
+              {
+                color:
+                  caption.length >= MAX_CAPTION_LENGTH
+                    ? "#ff3b30"
+                    : isDark
+                      ? "#888"
+                      : "#999",
+              },
             ]}
           >
             {caption.length}/{MAX_CAPTION_LENGTH}
@@ -383,7 +442,9 @@ export default function Upload() {
           onPress={() => setMusicPickerVisible(true)}
         >
           <Music size={20} color="#05a31dff" />
-          <Text style={[styles.musicBtnText, { color: isDark ? "#fff" : "#333" }]}>
+          <Text
+            style={[styles.musicBtnText, { color: isDark ? "#fff" : "#333" }]}
+          >
             {selectedMusic ? selectedMusic.title : "Add Music"}
           </Text>
           {selectedMusic && (
@@ -395,18 +456,34 @@ export default function Upload() {
 
         {selectedMusic && (
           <View style={styles.musicInfo}>
-            <Text style={[styles.musicTitle, { color: isDark ? "#fff" : "#333" }]}>
+            <Text
+              style={[styles.musicTitle, { color: isDark ? "#fff" : "#333" }]}
+            >
               {selectedMusic.title}
             </Text>
-            <Text style={[styles.musicArtist, { color: isDark ? "#aaa" : "#777" }]}>
+            <Text
+              style={[styles.musicArtist, { color: isDark ? "#aaa" : "#777" }]}
+            >
               {selectedMusic.artist || "Unknown artist"}
             </Text>
             <View style={styles.volumeRow}>
-              <Text style={[styles.volumeLabel, { color: isDark ? "#aaa" : "#777" }]}>
+              <Text
+                style={[
+                  styles.volumeLabel,
+                  { color: isDark ? "#aaa" : "#777" },
+                ]}
+              >
                 Volume: {musicVolume}%
               </Text>
-              <View style={[styles.volumeBar, { backgroundColor: isDark ? "#333" : "#e0e0e0" }]}>
-                <View style={[styles.volumeFill, { width: `${musicVolume}%` }]} />
+              <View
+                style={[
+                  styles.volumeBar,
+                  { backgroundColor: isDark ? "#333" : "#e0e0e0" },
+                ]}
+              >
+                <View
+                  style={[styles.volumeFill, { width: `${musicVolume}%` }]}
+                />
               </View>
             </View>
           </View>
@@ -442,20 +519,25 @@ export default function Upload() {
     <View style={styles.uploadingContainer}>
       <View style={styles.uploadingContent}>
         <View style={styles.progressCircle}>
-          <Text style={styles.progressPercent}>{Math.round(uploadProgress)}%</Text>
+          <Text style={styles.progressPercent}>
+            {Math.round(uploadProgress)}%
+          </Text>
         </View>
 
         <View style={styles.progressBarContainer}>
           <View
-            style={[
-              styles.progressBarFill,
-              { width: `${uploadProgress}%` },
-            ]}
+            style={[styles.progressBarFill, { width: `${uploadProgress}%` }]}
           />
         </View>
 
-        <Text style={[styles.uploadingStatus, { color: isDark ? "#fff" : "#333" }]}>
-          {uploadError ? "Upload failed" : uploading ? "Uploading..." : "Preparing..."}
+        <Text
+          style={[styles.uploadingStatus, { color: isDark ? "#fff" : "#333" }]}
+        >
+          {uploadError
+            ? "Upload failed"
+            : uploading
+              ? "Uploading..."
+              : "Preparing..."}
         </Text>
 
         {uploadError && (
@@ -465,8 +547,7 @@ export default function Upload() {
         {!uploadError ? (
           <TouchableOpacity
             style={styles.cancelUploadBtn}
-            onPress={cancelUpload}
-            disabled={!uploading}
+            onPress={uploading ? cancelUpload : handleDone}
           >
             <Text style={styles.cancelUploadText}>
               {uploading ? "Cancel" : "Done"}
@@ -486,10 +567,7 @@ export default function Upload() {
 
   return (
     <View
-      style={[
-        styles.container,
-        { backgroundColor: isDark ? "#000" : "#fff" },
-      ]}
+      style={[styles.container, { backgroundColor: isDark ? "#000" : "#fff" }]}
     >
       {renderHeader()}
 

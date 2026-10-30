@@ -1,16 +1,14 @@
-import React, { useState, useEffect, useMemo } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  PanResponder,
-  Dimensions,
-  TouchableOpacity,
-  Alert,
-} from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
-import { Scissors } from "lucide-react-native";
-import { useColorScheme } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import {
+    Alert,
+    Dimensions,
+    PanResponder,
+    StyleSheet,
+    Text,
+    View,
+    useColorScheme,
+} from "react-native";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -25,21 +23,24 @@ export default function TrimBar({ videoUri, onTrimChange, style }) {
   const [startSec, setStartSec] = useState(0);
   const [endSec, setEndSec] = useState(0);
   const [playerDuration, setPlayerDuration] = useState(0);
+  const [playerError, setPlayerError] = useState(null);
 
   const barContainerWidth = SCREEN_WIDTH - 64;
 
-  const player = useVideoPlayer(videoUri || undefined);
+  const player = useVideoPlayer(videoUri || undefined, (videoPlayer) => {
+    videoPlayer.loop = true;
+    videoPlayer.muted = true;
+    videoPlayer.timeUpdateEventInterval = 0.1;
+  });
 
   const effectiveDuration = playerDuration || endSec || 0;
 
   useEffect(() => {
     if (!player) return;
-    player.loop = true;
-    player.muted = true;
 
-    const sub = player.addListener(() => {
+    const updateDuration = () => {
       const d = player.duration || 0;
-      const durSec = d > 0 ? d / 1000 : 0;
+      const durSec = d > 0 ? d : 0;
 
       if (durSec > 0 && durSec !== playerDuration) {
         setPlayerDuration(durSec);
@@ -50,11 +51,32 @@ export default function TrimBar({ videoUri, onTrimChange, style }) {
           onTrimChange?.(0, initEnd);
         }
       }
+    };
 
+    const sourceSub = player.addListener("sourceLoad", (event) => {
+      setPlayerError(null);
+      updateDuration();
+      if (event.duration > 0 && event.duration !== playerDuration) {
+        setPlayerDuration(event.duration);
+        const initEnd = Math.min(event.duration, MAX_DURATION);
+        setEndSec(initEnd);
+        onTrimChange?.(0, initEnd);
+      }
+    });
+    const statusSub = player.addListener("statusChange", (event) => {
+      if (event.status === "error") {
+        setPlayerError(
+          event.error?.message ||
+            "This video could not be played in your browser.",
+        );
+      }
+      updateDuration();
+    });
+    const timeSub = player.addListener("timeUpdate", () => {
       if (startSec < endSec && endSec > 0) {
         const current = player.currentTime || 0;
-        if (current >= endSec * 1000 - 200) {
-          player.currentTime = startSec * 1000;
+        if (current >= endSec - 0.2) {
+          player.currentTime = startSec;
           player.play();
         } else if (!player.isPlaying) {
           player.play();
@@ -62,11 +84,19 @@ export default function TrimBar({ videoUri, onTrimChange, style }) {
       }
     });
 
+    updateDuration();
+    const durationPoll = setInterval(updateDuration, 250);
+
     if (videoUri && endSec > 0 && startSec < endSec) {
       player.play();
     }
 
-    return () => sub?.remove?.();
+    return () => {
+      sourceSub?.remove?.();
+      statusSub?.remove?.();
+      timeSub?.remove?.();
+      clearInterval(durationPoll);
+    };
   }, [player, videoUri, startSec, endSec, playerDuration]);
 
   const secToX = (sec) => {
@@ -144,7 +174,8 @@ export default function TrimBar({ videoUri, onTrimChange, style }) {
   );
 
   const selectedLength = endSec - startSec;
-  const isValid = selectedLength >= MIN_DURATION && selectedLength <= MAX_DURATION;
+  const isValid =
+    selectedLength >= MIN_DURATION && selectedLength <= MAX_DURATION;
 
   const formatTime = (sec) => {
     const m = Math.floor(sec / 60);
@@ -156,20 +187,23 @@ export default function TrimBar({ videoUri, onTrimChange, style }) {
 
   return (
     <View style={[styles.container, style]}>
-      {!hasDuration ? (
-        <View style={[styles.previewWrapper, { justifyContent: "center", alignItems: "center" }]}>
-          <Text style={{ color: "#888", fontSize: 13 }}>Loading video...</Text>
-        </View>
-      ) : (
-        <View style={styles.previewWrapper}>
-          <VideoView
-            player={player}
-            style={styles.preview}
-            contentFit="cover"
-            nativeControls={false}
-          />
-        </View>
-      )}
+      <View style={styles.previewWrapper}>
+        <VideoView
+          player={player}
+          style={styles.preview}
+          contentFit="contain"
+          nativeControls={false}
+        />
+        {!hasDuration && (
+          <View style={styles.previewMessage}>
+            <Text
+              style={{ color: playerError ? "#ff6b6b" : "#fff", fontSize: 13 }}
+            >
+              {playerError || "Loading video..."}
+            </Text>
+          </View>
+        )}
+      </View>
 
       <View
         style={[
@@ -265,6 +299,13 @@ const styles = StyleSheet.create({
   preview: {
     width: "100%",
     height: "100%",
+  },
+  previewMessage: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    backgroundColor: "rgba(0, 0, 0, 0.55)",
   },
   barContainer: {
     justifyContent: "center",

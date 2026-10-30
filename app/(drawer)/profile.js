@@ -6,6 +6,7 @@ import {
     followUploader,
     unfollowUploader,
 } from "@/services/videos";
+import { clearAuth, isAuthError } from "@/services/api";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import * as ImagePicker from "expo-image-picker";
@@ -18,12 +19,7 @@ import {
     Play,
     Trash2,
 } from "lucide-react-native";
-import {
-    useCallback,
-    useEffect,
-    useLayoutEffect,
-    useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -60,20 +56,36 @@ export default function Profile() {
   const [totalLikes, setTotalLikes] = useState(0);
   const [videos, setVideos] = useState([]);
   const [videosLoading, setVideosLoading] = useState(false);
-  const [uploadingPic, setUploadingPic] = useState(false);
-  const [menuVideo, setMenuVideo] = useState(null);
+   const [videosError, setVideosError] = useState(null);
+   const [uploadingPic, setUploadingPic] = useState(false);
+   const [menuVideo, setMenuVideo] = useState(null);
 
-  const fetchVideos = useCallback(async (uid) => {
-    setVideosLoading(true);
-    try {
-      const data = await fetchUserVideos(uid);
-      setVideos(data.videos || data.data || []);
-    } catch (_err) {
-      console.error("Fetch videos error:", _err);
-    } finally {
-      setVideosLoading(false);
-    }
-  }, []);
+  const handleAuthError = useCallback(async (err) => {
+    await clearAuth();
+    Alert.alert(
+      "Session Expired",
+      "Your session has expired. Please log in again.",
+      [{ text: "OK", onPress: () => router.replace("/(screens)") }],
+    );
+  }, [router]);
+
+   const fetchVideos = useCallback(async (uid) => {
+     setVideosLoading(true);
+     setVideosError(null);
+     try {
+       const data = await fetchUserVideos(uid);
+       setVideos(data.videos || data.data || []);
+     } catch (err) {
+       console.error("Fetch videos error:", err);
+       if (isAuthError(err)) {
+         handleAuthError(err);
+         return;
+       }
+       setVideosError(err.message || "Failed to load videos");
+     } finally {
+       setVideosLoading(false);
+     }
+   }, [handleAuthError]);
 
   const fetchOwnProfile = useCallback(
     async (uid) => {
@@ -86,6 +98,15 @@ export default function Profile() {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
+
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403) {
+            handleAuthError(new Error("Session expired"));
+            return;
+          }
+          Alert.alert("Error", data.message || "Failed to load profile");
+          return;
+        }
 
         if (data.success) {
           const user = data.user;
@@ -104,7 +125,7 @@ export default function Profile() {
         setLoading(false);
       }
     },
-    [fetchVideos],
+    [fetchVideos, handleAuthError],
   );
 
   const fetchOtherProfile = useCallback(
@@ -166,7 +187,7 @@ export default function Profile() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ["images"],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,
@@ -224,9 +245,12 @@ export default function Profile() {
       } else {
         await followUploader(profileUser.id);
       }
-    } catch (_err) {
+    } catch (err) {
       setFollowing((prev) => !prev);
-      console.error("Follow error:", _err);
+      console.error("Follow error:", err);
+      if (isAuthError(err)) {
+        handleAuthError(err);
+      }
     }
   };
 
@@ -242,8 +266,12 @@ export default function Profile() {
             await deleteVideo(video.id);
             setVideos((prev) => prev.filter((v) => v.id !== video.id));
             setTotalLikes((prev) => Math.max(0, prev - (video.likes || 0)));
-          } catch (_err) {
-            console.error("Delete error:", _err);
+          } catch (err) {
+            console.error("Delete error:", err);
+            if (isAuthError(err)) {
+              handleAuthError(err);
+              return;
+            }
             Alert.alert("Error", "Failed to delete video");
           }
         },
@@ -433,6 +461,26 @@ export default function Profile() {
           <View style={styles.videosLoading}>
             <ActivityIndicator size="large" color="#05a31dff" />
           </View>
+        ) : videosError ? (
+          <View style={styles.videosError}>
+            <Text
+              style={[
+                styles.errorText,
+                { color: isDark ? "#ff6b6b" : "#ff3b30" },
+              ]}
+            >
+              {videosError}
+            </Text>
+            <TouchableOpacity
+              style={styles.retryBtn}
+              onPress={() => {
+                const uid = profileUser?.id || paramUserId;
+                if (uid) fetchVideos(uid);
+              }}
+            >
+              <Text style={styles.retryText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
         ) : videos.length === 0 ? (
           <View style={styles.emptyVideos}>
             <Text
@@ -566,6 +614,26 @@ const styles = StyleSheet.create({
   videosLoading: {
     paddingVertical: 40,
     alignItems: "center",
+  },
+  videosError: {
+    paddingVertical: 40,
+    alignItems: "center",
+    gap: 12,
+  },
+  errorText: {
+    fontSize: 14,
+    textAlign: "center",
+  },
+  retryBtn: {
+    backgroundColor: "#05a31dff",
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  retryText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "600",
   },
   emptyVideos: {
     paddingVertical: 40,

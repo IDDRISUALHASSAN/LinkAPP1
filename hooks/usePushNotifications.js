@@ -1,9 +1,11 @@
 import Constants from "expo-constants";
-import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect } from "react";
-import { AppState } from "react-native";
-import { registerCurrentDeviceForPush } from "../app/services/notifications";
+import { AppState, Platform } from "react-native";
+import { registerCurrentDeviceForPush } from "../services/notifications";
+
+const Notifications =
+  Platform.OS !== "web" ? require("expo-notifications") : null;
 
 const API_URL = Constants.expoConfig.extra.API_URL;
 
@@ -20,7 +22,8 @@ const handleNotificationResponse = (response, router) => {
     const notifType = data?.type;
 
     if (videoId && notifType) {
-      const id = typeof videoId === "string" ? videoId : JSON.stringify(videoId);
+      const id =
+        typeof videoId === "string" ? videoId : JSON.stringify(videoId);
       router.push({
         pathname: "/(screens)/video/[id]",
         params: { id },
@@ -49,6 +52,7 @@ export default function usePushNotifications() {
   );
 
   useEffect(() => {
+    if (!Notifications) return;
     const receivedListener = Notifications.addNotificationReceivedListener(
       handleNotificationReceived,
     );
@@ -62,6 +66,7 @@ export default function usePushNotifications() {
   }, [onResponse]);
 
   useEffect(() => {
+    if (!Notifications) return;
     const register = () => {
       registerCurrentDeviceForPush(API_URL).catch((error) => {
         console.warn("Push notification registration failed:", error.message);

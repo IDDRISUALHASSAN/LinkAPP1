@@ -1,18 +1,25 @@
-import React, { useState, useEffect, useCallback } from "react";
-import {
-  View,
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  Alert,
-} from "react-native";
-import { useRouter, useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+    ActivityIndicator,
+    Alert,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from "react-native";
 
-import VideoItem from "@/components/VideoItem";
 import CommentSheet from "@/components/CommentSheet";
-import { fetchVideo, likeVideo, unlikeVideo, followUploader, unfollowUploader } from "@/services/videos";
+import VideoItem from "@/components/VideoItem";
+import {
+    fetchVideo,
+    followUploader,
+    likeVideo,
+    normalizeVideo,
+    unfollowUploader,
+    unlikeVideo,
+  } from "@/services/videos";
 
 export default function VideoPlayer() {
   const router = useRouter();
@@ -22,7 +29,10 @@ export default function VideoPlayer() {
   const [currentUserId, setCurrentUserId] = useState(null);
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0);
+  const [commentCount, setCommentCount] = useState(0);
+  const [shareCount, setShareCount] = useState(0);
   const [commentSheetVisible, setCommentSheetVisible] = useState(false);
+  const likingRef = useRef(false);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -37,10 +47,13 @@ export default function VideoPlayer() {
     setLoading(true);
     try {
       const data = await fetchVideo(id);
-      const v = data.video || data;
+      const v = normalizeVideo(data.video || data);
+      if (!v) throw new Error("Invalid video ID");
       setVideo(v);
       setLiked(v.liked || false);
       setLikesCount(v.likes || 0);
+      setCommentCount(v.comments || 0);
+      setShareCount(v.shares || 0);
 
       if (openComments === "true" || openComments === "1") {
         setCommentSheetVisible(true);
@@ -60,9 +73,14 @@ export default function VideoPlayer() {
 
   const handleLike = useCallback(
     async (videoId) => {
+      if (likingRef.current) return;
+      likingRef.current = true;
+
+      const previousLiked = liked;
+      const previousLikesCount = likesCount;
       const newLiked = !liked;
       setLiked(newLiked);
-      setLikesCount((c) => c + (newLiked ? 1 : -1));
+      setLikesCount(Math.max(0, previousLikesCount + (newLiked ? 1 : -1)));
 
       try {
         if (newLiked) {
@@ -70,15 +88,19 @@ export default function VideoPlayer() {
         } else {
           await unlikeVideo(videoId);
         }
-      } catch (_err) {
-        setLiked(!newLiked);
-        setLikesCount((c) => c + (newLiked ? -1 : 1));
+      } catch (error) {
+        console.error("Toggle video like error:", error);
+        setLiked(previousLiked);
+        setLikesCount(previousLikesCount);
+        Alert.alert("Like failed", error.message || "Please try again.");
+      } finally {
+        likingRef.current = false;
       }
     },
-    [liked],
+    [liked, likesCount],
   );
 
-   const handleFollow = async (uploaderId) => {
+  const handleFollow = async (uploaderId) => {
     if (!uploaderId) return;
     try {
       if (video?.uploader?.followed) {
@@ -133,6 +155,8 @@ export default function VideoPlayer() {
     ...video,
     liked,
     likes: likesCount,
+    comments: commentCount,
+    shares: shareCount,
   };
 
   return (
@@ -142,6 +166,7 @@ export default function VideoPlayer() {
         isVisible={true}
         onLike={handleLike}
         onComment={() => setCommentSheetVisible(true)}
+        onShare={() => setShareCount((prev) => prev + 1)}
         onFollow={handleFollow}
         onProfilePress={handleProfilePress}
         currentUserId={currentUserId}
@@ -153,6 +178,7 @@ export default function VideoPlayer() {
         videoId={video.id}
         videoOwnerId={video.uploader?.id}
         currentUserId={currentUserId}
+        onCommentAdded={() => setCommentCount((prev) => prev + 1)}
       />
     </View>
   );

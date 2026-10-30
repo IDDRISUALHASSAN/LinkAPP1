@@ -1,8 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
-import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
+
+const Notifications =
+  Platform.OS !== "web" ? require("expo-notifications") : null;
 
 const NOTIFICATION_CHANNEL = "default";
 let activeChatId = null;
@@ -11,24 +13,26 @@ export function setActiveNotificationChat(chatId) {
   activeChatId = chatId ? String(chatId) : null;
 }
 
-Notifications.setNotificationHandler({
-  handleNotification: async (notification) => {
-    const data = notification.request?.content?.data;
-    const notificationChatId = data?.senderId || data?.chatId;
-    const isOpenChat =
-      activeChatId && String(notificationChatId) === activeChatId;
+if (Notifications) {
+  Notifications.setNotificationHandler({
+    handleNotification: async (notification) => {
+      const data = notification.request?.content?.data;
+      const notificationChatId = data?.senderId || data?.chatId;
+      const isOpenChat =
+        activeChatId && String(notificationChatId) === activeChatId;
 
-    return {
-      shouldShowBanner: !isOpenChat,
-      shouldShowList: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-    };
-  },
-});
+      return {
+        shouldShowBanner: !isOpenChat,
+        shouldShowList: true,
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+      };
+    },
+  });
+}
 
 export async function registerForPushNotificationsAsync() {
-  if (!Device.isDevice) return null;
+  if (!Device.isDevice || !Notifications) return null;
 
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNEL, {

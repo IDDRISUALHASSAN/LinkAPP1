@@ -10,7 +10,7 @@ export default function UserAvatar({
   const source =
     uri && typeof uri === "string" && uri.startsWith("http")
       ? { uri }
-      : require("../../assets/images/profile.png");
+      : require("../assets/images/profile.png");
 
   return (
     <View

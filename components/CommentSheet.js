@@ -1,26 +1,28 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useRouter } from "expo-router";
+import { isAuthError, clearAuth, getAuthHeaders } from "../services/api";
+import { MessageCircle, Send, X } from "lucide-react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  Modal,
-  FlatList,
-  TextInput,
-  TouchableOpacity,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Alert,
-  Animated,
-  TouchableWithoutFeedback,
-  Keyboard,
+    ActivityIndicator,
+    Alert,
+    Animated,
+    FlatList,
+    Keyboard,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    Pressable,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    useColorScheme,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useColorScheme } from "react-native";
-import { Send, X, MessageCircle } from "lucide-react-native";
-import { Colors } from "../constants/theme";
-import CommentItem from "./CommentItem";
 import { fetchComments, postComment } from "../services/comments";
+import { normalizeVideoId } from "../services/videos";
+import CommentItem from "./CommentItem";
 
 export default function CommentSheet({
   visible,
@@ -30,70 +32,100 @@ export default function CommentSheet({
   currentUserId,
   onCommentAdded,
 }) {
+  const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
-  const colors = isDark ? Colors.dark : Colors.light;
   const insets = useSafeAreaInsets();
 
+  const handleAuthError = useCallback(async () => {
+    await clearAuth();
+    Alert.alert(
+      "Session Expired",
+      "Your session has expired. Please log in again.",
+      [{ text: "OK", onPress: () => router.replace("/(screens)") }],
+    );
+  }, [router]);
+
   const [comments, setComments] = useState([]);
-  const [cursor, setCursor] = useState(null);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [commentsError, setCommentsError] = useState(null);
   const [inputText, setInputText] = useState("");
   const [replyingTo, setReplyingTo] = useState(null);
   const [sending, setSending] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const slideAnim = useRef(new Animated.Value(0)).current;
-  const flatListRef = useRef(null);
+  const [slideAnim] = useState(() => new Animated.Value(0));
+  const paginationRef = useRef({ cursor: null, hasMore: true, loading: false });
 
-  const [currentPreviewUri, setCurrentPreviewUri] = useState(null);
-  const [selectedMusic, setSelectedMusic] = useState(null);
-
-  const loadComments = async (reset = false) => {
-    if (reset) {
-      setRefreshing(true);
-      setCursor(null);
-      setComments([]);
-      setHasMore(true);
-    } else if (!hasMore || loading) {
-      return;
-    }
-
-    try {
-      const res = await fetchComments(
-        videoId,
-        reset ? null : cursor,
-        20,
-      );
-      const newComments = res.comments || res.data || [];
-      const newCursor = res.nextCursor || res.cursor || null;
-
+  const loadComments = useCallback(
+    async (reset = false) => {
       if (reset) {
-        setComments(newComments);
+        paginationRef.current = { cursor: null, hasMore: true, loading: true };
+        setLoading(true);
+        setCommentsError(null);
+        setComments([]);
+        setHasMore(true);
+      } else if (
+        !paginationRef.current.hasMore ||
+        paginationRef.current.loading
+      ) {
+        return;
       } else {
-        setComments((prev) => [...prev, ...newComments]);
+        paginationRef.current.loading = true;
+        setLoading(true);
       }
-      setCursor(newCursor);
-      setHasMore(!!newCursor);
-    } catch (err) {
-      console.error("Load comments error:", err);
-      Alert.alert("Error", "Failed to load comments");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
+
+      try {
+        const res = await fetchComments(
+          videoId,
+          reset ? null : paginationRef.current.cursor,
+          20,
+        );
+        const newComments = res.comments || res.data || [];
+        const newCursor = res.nextCursor || res.cursor || null;
+
+        if (reset) {
+          setComments(newComments);
+        } else {
+          setComments((prev) => [...prev, ...newComments]);
+        }
+        setHasMore(!!newCursor);
+        setCommentsError(null);
+        paginationRef.current.cursor = newCursor;
+        paginationRef.current.hasMore = !!newCursor;
+      } catch (err) {
+        console.error("Load comments error:", {
+          status: err?.status,
+          message: err?.message,
+          data: err?.data,
+        });
+        if (isAuthError(err)) {
+          handleAuthError();
+          return;
+        }
+        setCommentsError(
+          err?.status
+            ? `${err.message || "Failed to load comments"} (HTTP ${err.status})`
+            : err?.message || "Failed to load comments",
+        );
+      } finally {
+        setLoading(false);
+        paginationRef.current.loading = false;
+      }
+    },
+    [videoId, handleAuthError],
+  );
 
   useEffect(() => {
-    if (visible && videoId) {
+    if (!visible || !videoId) return undefined;
+
+    const loadTimer = setTimeout(() => {
+      setInputText("");
+      setReplyingTo(null);
       loadComments(true);
-    } else {
-      setComments([]);
-      setCursor(null);
-      setHasMore(true);
-    }
-  }, [visible, videoId]);
+    }, 0);
+
+    return () => clearTimeout(loadTimer);
+  }, [visible, videoId, loadComments]);
 
   useEffect(() => {
     if (visible) {
@@ -107,54 +139,60 @@ export default function CommentSheet({
     }
   }, [visible, slideAnim]);
 
-  useEffect(() => {
-    const showKeyboard = () => {
-      Keyboard.dismiss();
-      setInputText("");
-      setReplyingTo(null);
-    };
-  }, []);
-
   const handleSend = async () => {
-    if (!inputText.trim()) return;
+    const text = inputText.trim();
+    if (!text || !videoId || sending) return;
+
+    const { Authorization } = await getAuthHeaders();
+    if (!Authorization) {
+      Alert.alert("Sign in required", "Please sign in to add a comment.");
+      return;
+    }
 
     setSending(true);
     try {
-      const res = await postComment(
-        videoId,
-        inputText.trim(),
-        replyingTo ? { id: replyingTo.id } : null,
-      );
+      const res = await postComment(videoId, text, replyingTo?.id || null);
 
-      const newComment = res.comment || res.data;
-      if (newComment) {
-        if (replyingTo) {
-          setComments((prev) => [
-            ...prev,
-            {
-              ...newComment,
-              isNew: true,
-            },
-          ]);
-          // If replying to a top-level comment, update its reply count
-          setComments((prev) =>
-            prev.map((c) =>
-              c.id === replyingTo.id
-                ? { ...c, replyCount: (c.replyCount || 0) + 1 }
-                : c,
-            ),
-          );
-        } else {
-          setComments((prev) => [newComment, ...prev]);
-          onCommentAdded?.();
-        }
+      const responseComment = res.comment || res.data?.comment || res.data;
+      const newComment = {
+        id: responseComment?.id ?? `local-${Date.now()}`,
+        userId: currentUserId,
+        text,
+        createdAt: new Date().toISOString(),
+        likes: 0,
+        liked: false,
+        replyCount: 0,
+        ...responseComment,
+        isNew: true,
+      };
+
+      if (replyingTo) {
+        setComments((prev) =>
+          prev.map((comment) =>
+            normalizeVideoId(comment.id) === normalizeVideoId(replyingTo.id)
+              ? {
+                  ...comment,
+                  replyCount: (comment.replyCount || 0) + 1,
+                  replies: [...(comment.replies || []), newComment],
+                }
+              : comment,
+          ),
+        );
+        onCommentAdded?.();
+      } else {
+        setComments((prev) => [newComment, ...prev]);
+        onCommentAdded?.();
       }
 
       setInputText("");
       setReplyingTo(null);
     } catch (err) {
       console.error("Send comment error:", err);
-      Alert.alert("Error", "Failed to send comment");
+      if (isAuthError(err)) {
+        handleAuthError();
+        return;
+      }
+      Alert.alert("Error", err?.message || "Failed to send comment");
     } finally {
       setSending(false);
     }
@@ -174,9 +212,7 @@ export default function CommentSheet({
 
   const handleUpdateComment = (commentId, updates) => {
     setComments((prev) =>
-      prev.map((c) =>
-        c.id === commentId ? { ...c, ...updates } : c,
-      ),
+      prev.map((c) => (c.id === commentId ? { ...c, ...updates } : c)),
     );
   };
 
@@ -223,15 +259,27 @@ export default function CommentSheet({
       onRequestClose={onDismiss}
       hardwareAccelerated
     >
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-        <View style={styles.modalContainer}>
-          <Animated.View
+      <View style={styles.modalContainer}>
+        <Pressable
+          style={StyleSheet.absoluteFillObject}
+          onPress={Keyboard.dismiss}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss comments"
+        />
+        <Animated.View
             style={[
               styles.sheet,
               {
                 height: sheetHeight + insets.bottom,
                 backgroundColor: isDark ? "#121212" : "#fff",
-                transform: [{ translateY: slideAnim.interpolate({ inputRange: [0, 1], outputRange: [sheetHeight, 0] }) }],
+                transform: [
+                  {
+                    translateY: slideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [sheetHeight, 0],
+                    }),
+                  },
+                ],
               },
             ]}
           >
@@ -249,19 +297,55 @@ export default function CommentSheet({
               <View style={styles.center}>
                 <ActivityIndicator size="large" color="#05a31dff" />
               </View>
+            ) : commentsError && comments.length === 0 ? (
+              <View style={styles.center}>
+                <MessageCircle size={48} color={isDark ? "#555" : "#ccc"} />
+                <Text
+                  style={[
+                    styles.emptyText,
+                    { color: isDark ? "#bbb" : "#555" },
+                  ]}
+                >
+                  Comments are temporarily unavailable
+                </Text>
+                <Text
+                  style={[
+                    styles.errorDetail,
+                    { color: isDark ? "#888" : "#777" },
+                  ]}
+                >
+                  {commentsError}
+                </Text>
+                <TouchableOpacity
+                  style={styles.retryCommentsBtn}
+                  onPress={() => loadComments(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading comments"
+                >
+                  <Text style={styles.retryCommentsText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
             ) : comments.length === 0 && !loading ? (
               <View style={styles.center}>
                 <MessageCircle size={48} color={isDark ? "#555" : "#ccc"} />
-                <Text style={[styles.emptyText, { color: isDark ? "#888" : "#999" }]}>
+                <Text
+                  style={[
+                    styles.emptyText,
+                    { color: isDark ? "#888" : "#999" },
+                  ]}
+                >
                   No comments yet
                 </Text>
               </View>
             ) : (
               <FlatList
-                ref={flatListRef}
                 data={comments}
-                keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
+                keyExtractor={(item) =>
+                  item.id?.toString() || Math.random().toString()
+                }
                 renderItem={renderItem}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
                 contentContainerStyle={{
                   paddingHorizontal: 16,
                   paddingTop: 8,
@@ -288,7 +372,12 @@ export default function CommentSheet({
             >
               {replyingTo ? (
                 <View style={styles.replyChip}>
-                  <Text style={[styles.replyText, { color: isDark ? "#aaa" : "#777" }]}>
+                  <Text
+                    style={[
+                      styles.replyText,
+                      { color: isDark ? "#aaa" : "#777" },
+                    ]}
+                  >
                     Replying to @{replyingTo.username || "user"}
                   </Text>
                   <TouchableOpacity onPress={cancelReply}>
@@ -315,9 +404,14 @@ export default function CommentSheet({
                   maxLength={300}
                 />
                 <TouchableOpacity
-                  style={[styles.sendBtn, { opacity: inputText.trim() ? 1 : 0.4 }]}
+                  style={[
+                    styles.sendBtn,
+                    { opacity: inputText.trim() ? 1 : 0.4 },
+                  ]}
                   onPress={handleSend}
                   disabled={!inputText.trim() || sending}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send comment"
                 >
                   {sending ? (
                     <ActivityIndicator size="small" color="#05a31dff" />
@@ -329,7 +423,6 @@ export default function CommentSheet({
             </KeyboardAvoidingView>
           </Animated.View>
         </View>
-      </TouchableWithoutFeedback>
     </Modal>
   );
 }
@@ -377,6 +470,27 @@ const styles = StyleSheet.create({
   emptyText: {
     marginTop: 12,
     fontSize: 15,
+    textAlign: "center",
+  },
+  errorDetail: {
+    marginTop: 8,
+    fontSize: 13,
+    textAlign: "center",
+    paddingHorizontal: 24,
+  },
+  retryCommentsBtn: {
+    marginTop: 16,
+    minHeight: 44,
+    paddingHorizontal: 20,
+    borderRadius: 22,
+    backgroundColor: "#05a31dff",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  retryCommentsText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
   },
   footer: {
     paddingVertical: 12,
@@ -389,6 +503,8 @@ const styles = StyleSheet.create({
     right: 0,
     borderTopWidth: 1,
     paddingTop: 8,
+    zIndex: 2,
+    elevation: 2,
   },
   replyChip: {
     flexDirection: "row",
@@ -413,12 +529,17 @@ const styles = StyleSheet.create({
     maxHeight: 100,
     borderRadius: 20,
     paddingHorizontal: 14,
+    zIndex: 3,
     paddingVertical: 8,
     fontSize: 15,
     includeFontPadding: false,
     textAlignVertical: "center",
   },
   sendBtn: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
     padding: 8,
   },
 });

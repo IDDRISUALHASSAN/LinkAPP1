@@ -1,17 +1,15 @@
-import React, { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-} from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter, useFocusEffect } from "expo-router";
 import Constants from "expo-constants";
-
-
+import { useFocusEffect, useRouter } from "expo-router";
+import React, { useState } from "react";
+import {
+  FlatList,
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
 const API_URL = Constants.expoConfig.extra.API_URL;
 
@@ -50,19 +48,14 @@ export default function Conversations() {
     }
   };
 
-  useEffect(() => {
-    loadConversations();
-  }, []);
-
-  // 🔹 Re-fetch when returning from chat
+  // Fetch on mount and whenever the screen regains focus.
   useFocusEffect(
     React.useCallback(() => {
       loadConversations();
-    }, [])
+    }, []),
   );
 
-  const defaultAvatar =
-    "https://cdn-icons-png.flaticon.com/512/847/847969.png";
+  const defaultAvatar = "https://cdn-icons-png.flaticon.com/512/847/847969.png";
 
   return (
     <View style={styles.container}>

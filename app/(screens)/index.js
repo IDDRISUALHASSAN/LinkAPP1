@@ -13,7 +13,7 @@ import {
     View,
 } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
-import { registerCurrentDeviceForPush } from "../services/notifications";
+import { registerCurrentDeviceForPush } from "../../services/notifications";
 
 export default function Home() {
   const API_URL = Constants.expoConfig.extra.API_URL;
@@ -58,17 +58,17 @@ export default function Home() {
       } else {
         Alert.alert("Success", "Login successful ");
 
-         await AsyncStorage.setItem("token", data.token);
-         await AsyncStorage.setItem("phoneNumber", PhoneNumber);
+        await AsyncStorage.setItem("token", data.token);
+        await AsyncStorage.setItem("phoneNumber", PhoneNumber);
 
-         if (data.userId) {
-           await AsyncStorage.setItem("userId", data.userId);
-         }
+        if (data.userId) {
+          await AsyncStorage.setItem("userId", data.userId);
+        }
 
-         await registerCurrentDeviceForPush(API_URL, {
-           userId: data.userId,
-           phoneNumber: PhoneNumber,
-         });
+        await registerCurrentDeviceForPush(API_URL, {
+          userId: data.userId,
+          phoneNumber: PhoneNumber,
+        });
 
         // clear inputs
         setPhoneNumber("");

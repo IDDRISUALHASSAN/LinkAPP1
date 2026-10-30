@@ -71,9 +71,29 @@ export default function Auth() {
       console.log(" Verify Response:", data);
 
       if (data.success) {
-        await AsyncStorage.setItem("phoneNumber", phoneNumber || "");
+        const authToken =
+          data.token ||
+          data.accessToken ||
+          data.data?.token ||
+          data.data?.accessToken ||
+          data.user?.token;
+
+        if (!authToken) {
+          Alert.alert(
+            "Verification complete",
+            "Your account was verified. Please sign in to continue.",
+          );
+          router.replace("/");
+          return;
+        }
+
+        await AsyncStorage.multiSet([
+          ["token", String(authToken)],
+          ["phoneNumber", phoneNumber || ""],
+          ["userId", String(data.userId || data.user?._id || userId)],
+        ]);
         Alert.alert("Success", data.message || "Verification successful!");
-        router.replace("/");
+        router.replace("/home");
       } else {
         Alert.alert("Verification Failed", data.message || "Invalid OTP.");
       }

@@ -8,27 +8,28 @@ import { router, useLocalSearchParams } from "expo-router";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  AppState,
-  Dimensions,
-  FlatList,
-  Image,
-  KeyboardAvoidingView,
-  Linking,
-  Modal,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Animated,
+    AppState,
+    Dimensions,
+    FlatList,
+    Image,
+    KeyboardAvoidingView,
+    Linking,
+    Modal,
+    Platform,
+    Pressable,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { io } from "socket.io-client";
-import { setActiveNotificationChat } from "../services/notifications";
+import { setActiveNotificationChat } from "../../services/notifications";
+import { getPlayableVideoUrl } from "../../services/media";
 
 const { width, height } = Dimensions.get("window");
 
@@ -47,7 +48,45 @@ function AudioAttachmentPlayer({ uri }) {
 }
 
 function VideoAttachmentPlayer({ uri, style }) {
-  const player = useVideoPlayer(uri);
+  const playableUri = getPlayableVideoUrl(uri);
+  const player = useVideoPlayer(playableUri || undefined);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!player) return;
+
+    const subscription = player.addListener("statusChange", (payload) => {
+      if (payload.status === "error") {
+        setError(payload.error?.message || "Video could not be played.");
+      } else if (payload.status === "readyToPlay") {
+        setError(null);
+      }
+    });
+
+    return () => subscription?.remove?.();
+  }, [player]);
+
+  if (error) {
+    return (
+      <TouchableOpacity
+        style={[style, styles.videoAttachmentError]}
+        onPress={async () => {
+          if (!player || !playableUri) return;
+          setError(null);
+          try {
+            await player.replaceAsync(playableUri);
+            player.play();
+          } catch (retryError) {
+            setError(retryError?.message || "Video could not be played.");
+          }
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Retry video attachment"
+      >
+        <Text style={styles.videoAttachmentErrorText}>Tap to retry video</Text>
+      </TouchableOpacity>
+    );
+  }
 
   return (
     <VideoView
@@ -55,6 +94,7 @@ function VideoAttachmentPlayer({ uri, style }) {
       style={style}
       nativeControls
       contentFit="contain"
+      playsInline
     />
   );
 }
@@ -120,7 +160,7 @@ export default function Chat() {
   const pickImage = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        mediaTypes: ["images", "videos"],
         quality: 0.7,
       });
       if (!result.canceled && result.assets?.length > 0) {
@@ -649,6 +689,15 @@ const styles = StyleSheet.create({
     height: 200,
     borderRadius: 10,
     backgroundColor: "#000",
+  },
+  videoAttachmentError: {
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 16,
+  },
+  videoAttachmentErrorText: {
+    color: "#fff",
+    textAlign: "center",
   },
   audioBtn: {
     padding: 10,

@@ -1,35 +1,34 @@
-import React, { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Pressable,
-  Dimensions,
-  Alert,
-  ActivityIndicator,
-  Share,
-} from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+  Download,
   Heart,
   MessageCircle,
-  Share2,
-  Download,
   Music,
-  Plus,
-  Play,
   Pause,
+  Play,
+  Plus,
+  Share2,
   Volume2,
   VolumeX,
 } from "lucide-react-native";
-import UserAvatar from "./UserAvatar";
-import ActionButton from "./ActionButton";
+import { useEffect, useRef, useState } from "react";
+import { getPlayableVideoUrl } from "../services/media";
 import {
-  downloadAndSaveVideo,
-  shareVideo,
-} from "../services/videos";
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Platform,
+  Pressable,
+  Share,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { downloadAndSaveVideo, shareVideo } from "../services/videos";
+import ActionButton from "./ActionButton";
+import UserAvatar from "./UserAvatar";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -38,11 +37,14 @@ const MAX_CAPTION_LINES = 3;
 function ExpandableCaption({ text }) {
   const [expanded, setExpanded] = useState(false);
 
-  const shouldShowMore = text && text.length > 100;
+  const shouldShowMore = (text?.length ?? 0) > 100;
 
   return (
-    <Pressable
-      onPress={shouldShowMore ? () => setExpanded((e) => !e) : undefined}
+    <TouchableOpacity
+      onPress={
+        shouldShowMore ? () => setExpanded((value) => !value) : undefined
+      }
+      activeOpacity={0.7}
       style={{ marginTop: 6 }}
     >
       <Text
@@ -53,7 +55,8 @@ function ExpandableCaption({ text }) {
       </Text>
       {shouldShowMore && (
         <TouchableOpacity
-          onPress={() => setExpanded((e) => !e)}
+          onPress={() => setExpanded((value) => !value)}
+          activeOpacity={0.7}
           style={{ marginTop: 4 }}
         >
           <Text style={styles.moreText}>
@@ -61,7 +64,7 @@ function ExpandableCaption({ text }) {
           </Text>
         </TouchableOpacity>
       )}
-    </Pressable>
+    </TouchableOpacity>
   );
 }
 
@@ -83,10 +86,33 @@ function VideoItem({
   const [showPlayOverlay, setShowPlayOverlay] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const sharingRef = useRef(false);
 
-  const player = useVideoPlayer(video?.videoUrl || undefined, (p) => {
+  const playableVideoUrl = getPlayableVideoUrl(video?.videoUrl);
+  const player = useVideoPlayer(playableVideoUrl || undefined, (p) => {
     p.loop = true;
   });
+
+  const [videoStatus, setVideoStatus] = useState("idle");
+  const [videoError, setVideoError] = useState(null);
+
+  useEffect(() => {
+    if (!player) return;
+
+    const subscription = player.addListener("statusChange", (payload) => {
+      setVideoStatus(payload.status);
+      if (payload.status === "error") {
+        const message =
+          payload.error?.message || "This video could not be played.";
+        console.error("Video playback error:", payload.error || message);
+        setVideoError(message);
+      } else if (payload.status === "readyToPlay") {
+        setVideoError(null);
+      }
+    });
+
+    return () => subscription?.remove?.();
+  }, [player]);
 
   useEffect(() => {
     if (!player) return;
@@ -95,17 +121,28 @@ function VideoItem({
   }, [player, isMuted]);
 
   useEffect(() => {
-    if (!player || !video?.videoUrl) return;
-
-    // eslint-disable-next-line react-hooks/immutability
-    player.uri = video.videoUrl;
+    if (!player || !playableVideoUrl || videoError) return;
 
     if (isVisible && !paused) {
       player.play();
     } else {
       player.pause();
     }
-  }, [player, video?.videoUrl, isVisible, paused]);
+  }, [player, playableVideoUrl, isVisible, paused, videoError]);
+
+  useEffect(() => {
+    if (!player || !playableVideoUrl || videoStatus === "readyToPlay") {
+      return undefined;
+    }
+
+    const timeoutId = setTimeout(() => {
+      if (player.status !== "readyToPlay") {
+        setVideoError("Video is taking too long to load.");
+      }
+    }, 15000);
+
+    return () => clearTimeout(timeoutId);
+  }, [player, playableVideoUrl, videoStatus]);
 
   const handleVideoTap = () => {
     setShowPlayOverlay(true);
@@ -113,8 +150,29 @@ function VideoItem({
     setTimeout(() => setShowPlayOverlay(false), 800);
   };
 
+  const handleRetry = async () => {
+    if (!player || !playableVideoUrl) return;
+
+    setVideoError(null);
+    setVideoStatus("loading");
+    try {
+      await player.replaceAsync(playableVideoUrl);
+      if (isVisible && !paused) player.play();
+    } catch (error) {
+      const message = error?.message || "This video could not be played.";
+      setVideoStatus("error");
+      setVideoError(message);
+    }
+  };
+
   const handleLike = () => {
+    if (!video?.id || typeof onLike !== "function") return;
     onLike(video.id);
+  };
+
+  const handleComment = () => {
+    if (!video?.id || typeof onComment !== "function") return;
+    onComment(video.id);
   };
 
   const liked = video.liked;
@@ -128,8 +186,13 @@ function VideoItem({
     try {
       setIsDownloading(true);
       await downloadAndSaveVideo(video.id, (progress) => {});
-      Alert.alert("Success", "Video saved to gallery");
-     } catch (_err) {
+      Alert.alert(
+        "Success",
+        Platform.OS === "web"
+          ? "Your video download has started."
+          : "Video saved to gallery.",
+      );
+    } catch (_err) {
       Alert.alert("Download failed", _err.message || "Could not save video");
     } finally {
       setIsDownloading(false);
@@ -137,21 +200,61 @@ function VideoItem({
   };
 
   const handleShare = async () => {
-    if (onShare) {
-      onShare(video);
-      return;
-    }
+    if (sharingRef.current) return;
+    sharingRef.current = true;
+
     try {
-      setIsSharing(true);
-      shareVideo(video.id);
-      const link = `linkapp://video/${video.id}`;
-      await Share.share({
-        message: video.caption || "",
-        url: link,
-      });
-    } catch (_err) {
-      console.error("Share error:", _err);
+      if (onShare) {
+        onShare(video);
+      } else {
+        setIsSharing(true);
+        const link =
+          Platform.OS === "web" && typeof window !== "undefined"
+            ? new URL(
+                `/video/${encodeURIComponent(video.id)}`,
+                window.location.origin,
+              ).toString()
+            : `linkapp://video/${video.id}`;
+        const message = [video.caption, link].filter(Boolean).join("\n");
+
+        if (Platform.OS === "web") {
+          if (typeof navigator !== "undefined" && navigator.share) {
+            await navigator.share({
+              title: video.uploader?.username
+                ? `Video by @${video.uploader.username}`
+                : "LinkApp video",
+              text: video.caption || "",
+              url: link,
+            });
+          } else if (
+            typeof navigator !== "undefined" &&
+            navigator.clipboard?.writeText
+          ) {
+            await navigator.clipboard.writeText(message);
+            Alert.alert("Link copied", "The video link is ready to share.");
+          } else {
+            throw new Error("Sharing is not available in this browser.");
+          }
+        } else {
+          await Share.share({ message, url: link });
+        }
+      }
+
+      try {
+        await shareVideo(video.id);
+      } catch (error) {
+        console.error("Share count update failed:", error);
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        console.error("Share error:", error);
+        Alert.alert(
+          "Share failed",
+          error.message || "Could not share this video.",
+        );
+      }
     } finally {
+      sharingRef.current = false;
       setIsSharing(false);
     }
   };
@@ -161,14 +264,33 @@ function VideoItem({
   const showFollow = !isOwnVideo && !alreadyFollowed;
 
   return (
-    <View style={[styles.container, { width: SCREEN_WIDTH, height: SCREEN_HEIGHT }]}>
+    <View
+      style={[styles.container, { width: SCREEN_WIDTH, height: SCREEN_HEIGHT }]}
+    >
       <Pressable style={styles.videoWrapper} onPress={handleVideoTap}>
-        {video.videoUrl ? (
+        {videoError ? (
+          <View style={[styles.video, styles.videoPlaceholder]}>
+            <View style={styles.videoErrorContent}>
+              <Text style={styles.videoErrorText}>
+                {videoError || "Failed to load video"}
+              </Text>
+              <TouchableOpacity
+                style={styles.retryVideoBtn}
+                onPress={handleRetry}
+                accessibilityRole="button"
+                accessibilityLabel="Retry video playback"
+              >
+                <Text style={styles.retryVideoText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : playableVideoUrl ? (
           <VideoView
             player={player}
             style={styles.video}
             contentFit="cover"
             nativeControls={false}
+            playsInline
           />
         ) : (
           <View style={[styles.video, styles.videoPlaceholder]}>
@@ -200,13 +322,17 @@ function VideoItem({
       </Pressable>
 
       {/* Bottom-left overlay */}
-      <View style={[styles.bottomLeft, { left: 16, bottom: insets.bottom + 60 }]}>
+      <View
+        style={[styles.bottomLeft, { left: 16, bottom: insets.bottom + 60 }]}
+      >
         <View style={styles.uploaderRow}>
           <TouchableOpacity onPress={() => onProfilePress(video.uploader)}>
             <UserAvatar uri={video.uploader?.profilePic} size={44} showBorder />
           </TouchableOpacity>
 
-          <Text style={styles.username}>@{video.uploader?.username || "user"}</Text>
+          <Text style={styles.username}>
+            @{video.uploader?.username || "user"}
+          </Text>
 
           <TouchableOpacity
             style={styles.followChip}
@@ -229,7 +355,9 @@ function VideoItem({
       </View>
 
       {/* Right-side action column */}
-      <View style={[styles.rightColumn, { right: 12, bottom: insets.bottom + 120 }]}>
+      <View
+        style={[styles.rightColumn, { right: 12, bottom: insets.bottom + 120 }]}
+      >
         {showFollow && (
           <TouchableOpacity
             style={styles.followAvatarWrapper}
@@ -251,7 +379,14 @@ function VideoItem({
           iconProps={{ color: liked ? "#ff3b30" : "#fff" }}
         />
 
-        <TouchableOpacity style={styles.actionItem} onPress={() => onComment(video.id)}>
+        <TouchableOpacity
+          style={[styles.actionItem, styles.commentButton]}
+          onPress={handleComment}
+          activeOpacity={0.7}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Open comments"
+        >
           <MessageCircle size={32} color="#fff" />
           <Text style={styles.actionCount}>{video.comments || 0}</Text>
         </TouchableOpacity>
@@ -303,6 +438,26 @@ const styles = StyleSheet.create({
     backgroundColor: "#111",
     justifyContent: "center",
     alignItems: "center",
+  },
+  videoErrorContent: {
+    alignItems: "center",
+    gap: 12,
+  },
+  videoErrorText: {
+    color: "#ff6b6b",
+    fontSize: 15,
+    fontWeight: "500",
+  },
+  retryVideoBtn: {
+    backgroundColor: "#05a31dff",
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  retryVideoText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
   },
   playOverlay: {
     position: "absolute",
@@ -359,6 +514,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  captionToggle: {
+    alignSelf: "flex-start",
+    paddingVertical: 4,
+  },
   moreText: {
     color: "#fff",
     fontSize: 13,
@@ -386,6 +545,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginVertical: 4,
+  },
+  commentButton: {
+    minWidth: 44,
+    minHeight: 44,
+    zIndex: 2,
+    elevation: 2,
   },
   actionCount: {
     color: "#fff",

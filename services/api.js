@@ -5,6 +5,23 @@ const API_URL = Constants.expoConfig.extra.API_URL;
 
 export { API_URL };
 
+export function isAuthError(err) {
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = (err.message || "").toLowerCase();
+  return (
+    msg.includes("invalid token") ||
+    msg.includes("unauthorized") ||
+    msg.includes("forbidden") ||
+    msg.includes("expired") ||
+    msg.includes("no token")
+  );
+}
+
+export async function clearAuth() {
+  await AsyncStorage.multiRemove(["token", "userId", "phoneNumber"]);
+}
+
 export async function getAuthHeaders() {
   const token = await AsyncStorage.getItem("token");
   return {
@@ -16,6 +33,8 @@ export async function getUserId() {
   return await AsyncStorage.getItem("userId");
 }
 
+const DEFAULT_TIMEOUT = 60000;
+
 export async function apiRequest(path, options = {}) {
   const headers = {
     "Content-Type": "application/json",
@@ -23,10 +42,26 @@ export async function apiRequest(path, options = {}) {
     ...(options.headers || {}),
   };
 
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, options.timeout ?? DEFAULT_TIMEOUT);
+
+  let res;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error("Request timed out. Please check your connection and try again.");
+    }
+    throw new Error("Network error. Please check your connection and try again.");
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   let data;
   try {
@@ -39,6 +74,7 @@ export async function apiRequest(path, options = {}) {
     const error = new Error(data.message || `Request failed with ${res.status}`);
     error.status = res.status;
     error.data = data;
+    error.isAuthError = res.status === 401 || res.status === 403;
     throw error;
   }
 
