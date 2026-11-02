@@ -29,7 +29,8 @@ export default function TrimBar({ videoUri, onTrimChange, style }) {
 
   const player = useVideoPlayer(videoUri || undefined, (videoPlayer) => {
     videoPlayer.loop = true;
-    videoPlayer.muted = true;
+    videoPlayer.muted = false;
+    videoPlayer.volume = 1;
     videoPlayer.timeUpdateEventInterval = 0.1;
   });
 

@@ -1,5 +1,6 @@
 import { VideoView, useVideoPlayer } from "expo-video";
 import {
+  Check,
   Download,
   Heart,
   MessageCircle,
@@ -11,12 +12,11 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react-native";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { getPlayableVideoUrl } from "../services/media";
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   Platform,
   Pressable,
   Share,
@@ -26,11 +26,10 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { downloadAndSaveVideo, shareVideo } from "../services/videos";
+import { downloadAndSaveVideo, formatCount, shareVideo } from "../services/videos";
+import { useMuteStore } from "../stores/muteStore";
 import ActionButton from "./ActionButton";
 import UserAvatar from "./UserAvatar";
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
 const MAX_CAPTION_LINES = 3;
 
@@ -71,6 +70,7 @@ function ExpandableCaption({ text }) {
 function VideoItem({
   video,
   isVisible,
+  isMuted: _isMuted,
   onLike,
   onComment,
   onShare,
@@ -79,22 +79,33 @@ function VideoItem({
   onProfilePress,
   onUpload,
   currentUserId,
+  appState = "active",
+  itemHeight,
 }) {
   const insets = useSafeAreaInsets();
+  const store = useMuteStore();
+  const isMuted = store.isMuted;
+  const setMuted = store.setMuted;
+
   const [paused, setPaused] = useState(false);
-  const [isMuted, setIsMuted] = useState(true);
   const [showPlayOverlay, setShowPlayOverlay] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const sharingRef = useRef(false);
-
-  const playableVideoUrl = getPlayableVideoUrl(video?.videoUrl);
-  const player = useVideoPlayer(playableVideoUrl || undefined, (p) => {
-    p.loop = true;
-  });
-
   const [videoStatus, setVideoStatus] = useState("idle");
   const [videoError, setVideoError] = useState(null);
+  const [playbackProgress, setPlaybackProgress] = useState(0);
+
+  const playableVideoUrl = getPlayableVideoUrl(video?.videoUrl);
+  const playerSource = playableVideoUrl
+    ? { uri: playableVideoUrl, contentType: "progressive" }
+    : null;
+
+  const player = useVideoPlayer(playerSource, (p) => {
+    p.loop = true;
+    p.muted = isMuted;
+    p.volume = isMuted ? 0 : 1;
+  });
 
   useEffect(() => {
     if (!player) return;
@@ -111,24 +122,48 @@ function VideoItem({
       }
     });
 
-    return () => subscription?.remove?.();
+    const timeSub = player.addListener("timeUpdate", (payload) => {
+      if (payload.duration > 0) {
+        setPlaybackProgress(payload.currentTime / payload.duration);
+      }
+    });
+
+    return () => {
+      subscription?.remove?.();
+      timeSub?.remove?.();
+    };
   }, [player]);
 
   useEffect(() => {
     if (!player) return;
-    // eslint-disable-next-line react-hooks/immutability
+    /* eslint-disable react-hooks/immutability */
     player.muted = isMuted;
+    player.volume = isMuted ? 0 : 1;
+    /* eslint-enable react-hooks/immutability */
   }, [player, isMuted]);
 
   useEffect(() => {
-    if (!player || !playableVideoUrl || videoError) return;
-
-    if (isVisible && !paused) {
-      player.play();
-    } else {
-      player.pause();
+    if (!player || !playableVideoUrl || videoError) {
+      if (player) player.pause();
+      return;
     }
-  }, [player, playableVideoUrl, isVisible, paused, videoError]);
+
+      if (isVisible && !paused && appState === "active") {
+        /* eslint-disable react-hooks/immutability */
+        const playResult = player.play();
+        playResult?.catch?.((error) => {
+          const message = error?.message || "This video could not be played.";
+          console.error("Video play request failed:", error);
+          setVideoError(message);
+        });
+        if (player.currentTime > 0) {
+          player.currentTime = 0;
+        }
+        /* eslint-enable react-hooks/immutability */
+      } else {
+        player.pause();
+      }
+  }, [player, playableVideoUrl, isVisible, paused, videoError, appState]);
 
   useEffect(() => {
     if (!player || !playableVideoUrl || videoStatus === "readyToPlay") {
@@ -144,6 +179,17 @@ function VideoItem({
     return () => clearTimeout(timeoutId);
   }, [player, playableVideoUrl, videoStatus]);
 
+  useEffect(() => {
+    if (!player) return;
+    return () => {
+      try {
+        player.remove();
+      } catch (_e) {
+        // player may already be disposed
+      }
+    };
+  }, [player]);
+
   const handleVideoTap = () => {
     setShowPlayOverlay(true);
     setPaused((p) => !p);
@@ -156,8 +202,13 @@ function VideoItem({
     setVideoError(null);
     setVideoStatus("loading");
     try {
-      await player.replaceAsync(playableVideoUrl);
-      if (isVisible && !paused) player.play();
+      await player.replaceAsync(playerSource);
+      if (isVisible && !paused && appState === "active") {
+        const playResult = player.play();
+        playResult?.catch?.((playError) => {
+          throw playError;
+        });
+      }
     } catch (error) {
       const message = error?.message || "This video could not be played.";
       setVideoStatus("error");
@@ -185,7 +236,7 @@ function VideoItem({
     }
     try {
       setIsDownloading(true);
-      await downloadAndSaveVideo(video.id, (progress) => {});
+      await downloadAndSaveVideo(video.id, () => {});
       Alert.alert(
         "Success",
         Platform.OS === "web"
@@ -202,43 +253,44 @@ function VideoItem({
   const handleShare = async () => {
     if (sharingRef.current) return;
     sharingRef.current = true;
+    setIsSharing(true);
 
     try {
-      if (onShare) {
-        onShare(video);
-      } else {
-        setIsSharing(true);
-        const link =
-          Platform.OS === "web" && typeof window !== "undefined"
-            ? new URL(
-                `/video/${encodeURIComponent(video.id)}`,
-                window.location.origin,
-              ).toString()
-            : `linkapp://video/${video.id}`;
-        const message = [video.caption, link].filter(Boolean).join("\n");
+      const link =
+        Platform.OS === "web" && typeof window !== "undefined"
+          ? new URL(
+              `/video/${encodeURIComponent(video.id)}`,
+              window.location.origin,
+            ).toString()
+          : `linkapp://video/${encodeURIComponent(video.id)}`;
+      const message = [video.caption, link].filter(Boolean).join("\n");
 
-        if (Platform.OS === "web") {
-          if (typeof navigator !== "undefined" && navigator.share) {
-            await navigator.share({
-              title: video.uploader?.username
-                ? `Video by @${video.uploader.username}`
-                : "LinkApp video",
-              text: video.caption || "",
-              url: link,
-            });
-          } else if (
-            typeof navigator !== "undefined" &&
-            navigator.clipboard?.writeText
-          ) {
-            await navigator.clipboard.writeText(message);
-            Alert.alert("Link copied", "The video link is ready to share.");
-          } else {
-            throw new Error("Sharing is not available in this browser.");
+      if (Platform.OS === "web") {
+        if (typeof navigator !== "undefined" && navigator.share) {
+          await navigator.share({
+            title: video.uploader?.username
+              ? `Video by @${video.uploader.username}`
+              : "LinkApp video",
+            text: video.caption || "",
+            url: link,
+          });
+        } else if (
+          typeof navigator !== "undefined" &&
+          navigator.clipboard?.writeText
+        ) {
+          await navigator.clipboard.writeText(message);
+          if (typeof window !== "undefined") {
+            window.alert("Video link copied to clipboard.");
           }
         } else {
-          await Share.share({ message, url: link });
+          throw new Error("Sharing is not available in this browser.");
         }
+      } else {
+        const result = await Share.share({ message, url: link });
+        if (result.action === Share.dismissedAction) return;
       }
+
+      onShare?.(video);
 
       try {
         await shareVideo(video.id);
@@ -246,12 +298,14 @@ function VideoItem({
         console.error("Share count update failed:", error);
       }
     } catch (error) {
-      if (error.name !== "AbortError") {
+      if (error?.name !== "AbortError") {
         console.error("Share error:", error);
-        Alert.alert(
-          "Share failed",
-          error.message || "Could not share this video.",
-        );
+        const message = error?.message || "Could not share this video.";
+        if (Platform.OS === "web" && typeof window !== "undefined") {
+          window.alert(`Share failed: ${message}`);
+        } else {
+          Alert.alert("Share failed", message);
+        }
       }
     } finally {
       sharingRef.current = false;
@@ -260,12 +314,12 @@ function VideoItem({
   };
 
   const isOwnVideo = currentUserId === video.uploader?.id;
-  const alreadyFollowed = video.uploader?.followed;
-  const showFollow = !isOwnVideo && !alreadyFollowed;
+  const isFollowing = Boolean(video.uploader?.followed);
+  const showFollow = !isOwnVideo && typeof onFollow === "function";
 
   return (
     <View
-      style={[styles.container, { width: SCREEN_WIDTH, height: SCREEN_HEIGHT }]}
+      style={[styles.container, itemHeight > 0 && { height: itemHeight }]}
     >
       <Pressable style={styles.videoWrapper} onPress={handleVideoTap}>
         {videoError ? (
@@ -308,9 +362,30 @@ function VideoItem({
           </View>
         )}
 
+        <View style={styles.progressBar}>
+          <View
+            style={[
+              styles.progressFill,
+              {
+                width: `${Math.min(100, Math.max(0, playbackProgress * 100))}%`,
+              },
+            ]}
+          />
+        </View>
+
+        {video.thumbnailUrl && !playableVideoUrl && (
+          <View style={[styles.thumbnailPoster, styles.video]} />
+        )}
+
+        {videoStatus !== "readyToPlay" && videoStatus !== "playing" && playableVideoUrl && !videoError && (
+          <View style={styles.bufferingOverlay}>
+            <ActivityIndicator size="large" color="#fff" />
+          </View>
+        )}
+
         <TouchableOpacity
           style={[styles.muteBtn, { top: insets.top + 12 }]}
-          onPress={() => setIsMuted((m) => !m)}
+          onPress={() => setMuted(!isMuted)}
           activeOpacity={0.7}
         >
           {isMuted ? (
@@ -334,14 +409,24 @@ function VideoItem({
             @{video.uploader?.username || "user"}
           </Text>
 
-          <TouchableOpacity
-            style={styles.followChip}
-            onPress={() => onFollow(video.uploader?.id)}
-            activeOpacity={0.7}
-          >
-            <Plus size={16} color="#fff" />
-            <Text style={styles.followText}>Follow</Text>
-          </TouchableOpacity>
+          {showFollow && (
+            <TouchableOpacity
+              style={[styles.followChip, isFollowing && styles.followingChip]}
+              onPress={() => onFollow(video.uploader?.id)}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={isFollowing ? "Unfollow user" : "Follow user"}
+            >
+              {isFollowing ? (
+                <Check size={15} color="#05a31d" />
+              ) : (
+                <Plus size={16} color="#fff" />
+              )}
+              <Text style={[styles.followText, isFollowing && styles.followingText]}>
+                {isFollowing ? "Following" : "Follow"}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <ExpandableCaption text={video.caption} />
@@ -358,24 +443,12 @@ function VideoItem({
       <View
         style={[styles.rightColumn, { right: 12, bottom: insets.bottom + 120 }]}
       >
-        {showFollow && (
-          <TouchableOpacity
-            style={styles.followAvatarWrapper}
-            onPress={() => onFollow(video.uploader?.id)}
-            activeOpacity={0.7}
-          >
-            <UserAvatar uri={video.uploader?.profilePic} size={44} showBorder />
-            <View style={styles.smallPlusBtn}>
-              <Plus size={12} color="#fff" />
-            </View>
-          </TouchableOpacity>
-        )}
-
         <ActionButton
           icon={Heart}
-          count={likesCount}
+          count={formatCount(likesCount)}
           onPress={handleLike}
           active={liked}
+          style={styles.actionButton}
           iconProps={{ color: liked ? "#ff3b30" : "#fff" }}
         />
 
@@ -388,13 +461,14 @@ function VideoItem({
           accessibilityLabel="Open comments"
         >
           <MessageCircle size={32} color="#fff" />
-          <Text style={styles.actionCount}>{video.comments || 0}</Text>
+          <Text style={styles.actionCount}>{formatCount(video.comments)}</Text>
         </TouchableOpacity>
 
         <ActionButton
           icon={Share2}
-          count={video.shares || 0}
+          count={formatCount(video.shares)}
           onPress={handleShare}
+          style={styles.actionButton}
           iconProps={{ color: isSharing ? "#aaa" : "#fff" }}
         />
 
@@ -403,12 +477,17 @@ function VideoItem({
           onPress={handleDownload}
           activeOpacity={0.7}
           disabled={isDownloading}
+          accessibilityRole="button"
+          accessibilityLabel="Download video"
         >
           {isDownloading ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
             <Download size={28} color="#fff" />
           )}
+          <Text style={styles.actionCount}>
+            {formatCount(video.downloads || 0)}
+          </Text>
         </TouchableOpacity>
 
         <View style={styles.actionItem}>
@@ -423,6 +502,7 @@ function VideoItem({
 
 const styles = StyleSheet.create({
   container: {
+    flex: 1,
     backgroundColor: "#000",
   },
   videoWrapper: {
@@ -479,10 +559,12 @@ const styles = StyleSheet.create({
   },
   bottomLeft: {
     position: "absolute",
-    left: 0,
-    bottom: 0,
-    right: 160,
-    paddingRight: 10,
+    right: 88,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: "rgba(0,0,0,0.38)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
   },
   uploaderRow: {
     flexDirection: "row",
@@ -494,29 +576,34 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 15,
     fontWeight: "600",
+    flexShrink: 1,
   },
   followChip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "#ff3b30",
+    backgroundColor: "#05a31d",
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
+  },
+  followingChip: {
+    backgroundColor: "rgba(255,255,255,0.9)",
+    borderWidth: 1,
+    borderColor: "#05a31d",
   },
   followText: {
     color: "#fff",
     fontSize: 12,
     fontWeight: "600",
   },
+  followingText: {
+    color: "#05a31d",
+  },
   caption: {
     color: "#fff",
     fontSize: 14,
     lineHeight: 20,
-  },
-  captionToggle: {
-    alignSelf: "flex-start",
-    paddingVertical: 4,
   },
   moreText: {
     color: "#fff",
@@ -539,7 +626,13 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 0,
     alignItems: "center",
-    gap: 2,
+    gap: 4,
+  },
+  actionButton: {
+    minWidth: 52,
+    minHeight: 60,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,0,0,0.38)",
   },
   actionItem: {
     alignItems: "center",
@@ -547,8 +640,10 @@ const styles = StyleSheet.create({
     marginVertical: 4,
   },
   commentButton: {
-    minWidth: 44,
-    minHeight: 44,
+    width: 52,
+    height: 60,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,0,0,0.38)",
     zIndex: 2,
     elevation: 2,
   },
@@ -557,20 +652,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     marginTop: 2,
-  },
-  followAvatarWrapper: {
-    position: "relative",
-    marginBottom: 10,
-  },
-  smallPlusBtn: {
-    position: "absolute",
-    bottom: -4,
-    right: -4,
-    backgroundColor: "#ff3b30",
-    borderRadius: 10,
-    padding: 2,
-    borderWidth: 1.5,
-    borderColor: "#000",
   },
   musicDisc: {
     width: 44,
@@ -583,6 +664,25 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.1)",
     marginTop: 10,
   },
+  progressBar: {
+    position: "absolute",
+    bottom: 0,
+    height: 3,
+    backgroundColor: "rgba(255,255,255,0.2)",
+  },
+  progressFill: {
+    height: "100%",
+    backgroundColor: "#ff3b30",
+  },
+  thumbnailPoster: {
+    backgroundColor: "#111",
+  },
+  bufferingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
 });
 
-export default VideoItem;
+export default memo(VideoItem);

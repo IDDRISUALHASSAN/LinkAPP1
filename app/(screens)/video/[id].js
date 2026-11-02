@@ -20,6 +20,7 @@ import {
     unfollowUploader,
     unlikeVideo,
   } from "@/services/videos";
+import { isAuthError, clearAuth } from "@/services/api";
 
 export default function VideoPlayer() {
   const router = useRouter();
@@ -82,17 +83,30 @@ export default function VideoPlayer() {
       setLiked(newLiked);
       setLikesCount(Math.max(0, previousLikesCount + (newLiked ? 1 : -1)));
 
-      try {
+       try {
         if (newLiked) {
-          await likeVideo(videoId);
+          const res = await likeVideo(videoId);
+          const serverCount = Number(res?.likesCount ?? res?.data?.likesCount);
+          if (!isNaN(serverCount)) setLikesCount(serverCount);
         } else {
-          await unlikeVideo(videoId);
+          const res = await unlikeVideo(videoId);
+          const serverCount = Number(res?.likesCount ?? res?.data?.likesCount);
+          if (!isNaN(serverCount)) setLikesCount(serverCount);
         }
       } catch (error) {
         console.error("Toggle video like error:", error);
         setLiked(previousLiked);
         setLikesCount(previousLikesCount);
-        Alert.alert("Like failed", error.message || "Please try again.");
+        if (isAuthError(error)) {
+          await clearAuth();
+          Alert.alert(
+            "Session Expired",
+            "Your session has expired. Please log in again.",
+            [{ text: "OK", onPress: () => router.replace("/(screens)") }],
+          );
+        } else {
+          Alert.alert("Like failed", error.message || "Please try again.");
+        }
       } finally {
         likingRef.current = false;
       }

@@ -19,7 +19,12 @@ export function isAuthError(err) {
 }
 
 export async function clearAuth() {
-  await AsyncStorage.multiRemove(["token", "userId", "phoneNumber"]);
+  await AsyncStorage.multiRemove([
+    "token",
+    "userToken",
+    "userId",
+    "phoneNumber",
+  ]);
 }
 
 export async function getAuthHeaders() {

@@ -4,6 +4,7 @@ import {
     fetchUserProfile,
     fetchUserVideos,
     followUploader,
+    normalizeVideoId,
     unfollowUploader,
 } from "@/services/videos";
 import { clearAuth, isAuthError } from "@/services/api";
@@ -236,20 +237,28 @@ export default function Profile() {
   };
 
   const handleFollowToggle = async () => {
-    if (isOwnProfile || !profileUser?.id) return;
+    const targetUserId = normalizeVideoId(profileUser?.id ?? profileUser?._id);
+    if (isOwnProfile || !targetUserId) return;
 
-    setFollowing((prev) => !prev);
+    const wasFollowing = following;
+    const nextFollowing = !wasFollowing;
+    setFollowing(nextFollowing);
+    setFollowers((count) => Math.max(0, count + (nextFollowing ? 1 : -1)));
+
     try {
-      if (following) {
-        await unfollowUploader(profileUser.id);
+      if (wasFollowing) {
+        await unfollowUploader(targetUserId);
       } else {
-        await followUploader(profileUser.id);
+        await followUploader(targetUserId);
       }
     } catch (err) {
-      setFollowing((prev) => !prev);
+      setFollowing(wasFollowing);
+      setFollowers((count) => Math.max(0, count + (wasFollowing ? 1 : -1)));
       console.error("Follow error:", err);
       if (isAuthError(err)) {
         handleAuthError(err);
+      } else {
+        Alert.alert("Follow failed", err.message || "Please try again.");
       }
     }
   };

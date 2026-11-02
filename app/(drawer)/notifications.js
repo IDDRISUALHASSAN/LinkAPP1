@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -13,12 +13,14 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Check } from "lucide-react-native";
 import UserAvatar from "@/components/UserAvatar";
+import { normalizeVideoId } from "@/services/videos";
 import {
   fetchNotifications,
   markAllNotificationsRead,
+  markNotificationsRead,
 } from "@/services/notificationsApi";
 import {
-  setUnreadCount as setGlobalUnreadCount,
+  decrementUnread,
   resetUnread as resetGlobalUnread,
 } from "@/services/unreadStore";
 
@@ -29,6 +31,73 @@ const TYPE_ICONS = {
   comment_like: "❤️",
   follow: "👤",
 };
+
+function getNotificationId(notification) {
+  return normalizeVideoId(notification?.id ?? notification?._id) || "";
+}
+
+function getNotificationActor(notification) {
+  const actor =
+    notification?.actor ||
+    notification?.sender ||
+    notification?.user ||
+    notification?.fromUser ||
+    notification?.from ||
+    {};
+
+  return {
+    id:
+      actor.id ??
+      actor._id ??
+      notification?.userId ??
+      notification?.senderId ??
+      notification?.actorId,
+    name:
+      actor.name ||
+      actor.username ||
+      actor.displayName ||
+      actor.fullName ||
+      notification?.actorName ||
+      notification?.senderName ||
+      notification?.userName ||
+      notification?.username ||
+      notification?.name ||
+      "Someone",
+    avatar:
+      actor.profilePic ||
+      actor.avatar ||
+      actor.profileImage ||
+      notification?.avatar ||
+      notification?.profilePic ||
+      "",
+  };
+}
+
+function getNotificationVideoId(notification) {
+  return normalizeVideoId(
+    notification?.videoId ??
+      notification?.video?._id ??
+      notification?.video?.id ??
+      notification?.target?.videoId ??
+      notification?.targetVideoId,
+  );
+}
+
+function getNotificationText(notification, actorName) {
+  if (notification?.text || notification?.message) {
+    return notification.text || notification.message;
+  }
+
+  const action = {
+    like: "liked your video",
+    comment: "commented on your video",
+    reply: "replied to your comment",
+    comment_like: "liked your comment",
+    follow: "started following you",
+    }[notification?.type || notification?.notificationType];
+
+  return action ? `${actorName} ${action}` : `${actorName} sent you a notification`;
+}
 
 function formatTimeAgo(timestamp) {
   if (!timestamp) return "";
@@ -56,23 +125,33 @@ export default function NotificationsScreen() {
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [unreadMap, setUnreadMap] = useState({});
+  const initialLoadRef = useRef(false);
 
   const loadNotifications = useCallback(
     async (reset = false) => {
       if (reset) {
         setRefreshing(true);
+        setLoading(true);
         setCursor(null);
         setNotifications([]);
         setHasMore(true);
+        setLoadError(null);
       } else if (!hasMore || loading) {
         return;
       }
 
       try {
         const data = await fetchNotifications(reset ? null : cursor, 20);
-        const newNotifications = data.notifications || data.data || [];
-        const nextCursor = data.nextCursor || data.cursor || null;
+        const newNotifications = Array.isArray(data.notifications)
+          ? data.notifications
+          : Array.isArray(data.data)
+            ? data.data
+            : Array.isArray(data.items)
+              ? data.items
+              : [];
+        const nextCursor = data.nextCursor || data.cursor || data.next || null;
 
         if (reset) {
           setNotifications(newNotifications);
@@ -84,18 +163,18 @@ export default function NotificationsScreen() {
 
         const unread = {};
         newNotifications.forEach((n) => {
-          if (!n.read) unread[n.id] = true;
+          const notificationId = getNotificationId(n);
+          if (notificationId && !n.read) unread[notificationId] = true;
         });
         if (reset) {
           setUnreadMap(unread);
         } else {
           setUnreadMap((prev) => ({ ...prev, ...unread }));
         }
-
-        const unreadCount = newNotifications.filter((n) => !n.read).length;
-        setGlobalUnreadCount(unreadCount);
+        setLoadError(null);
       } catch (_err) {
         console.error("Load notifications error:", _err);
+        setLoadError(_err?.message || "Unable to load notifications.");
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -105,26 +184,36 @@ export default function NotificationsScreen() {
   );
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    // The callback also depends on pagination state. Guard the initial load so
+    // callback identity changes do not restart the first page request.
+    if (initialLoadRef.current) return;
+    initialLoadRef.current = true;
     loadNotifications(true);
   }, [loadNotifications]);
 
   const handleNotificationPress = async (notification) => {
-    setUnreadMap((prev) => ({ ...prev, [notification.id]: false }));
+    const notificationId = getNotificationId(notification);
+    const wasUnread = unreadMap[notificationId] !== false && !notification.read;
+    setUnreadMap((prev) => ({ ...prev, [notificationId]: false }));
 
     try {
-      await markAllNotificationsRead([notification.id]);
-      const remaining = notifications.filter(
-        (n) => n.id !== notification.id && !n.read,
-      ).length;
-      setGlobalUnreadCount(remaining);
+      if (wasUnread && notificationId) {
+        await markNotificationsRead([notificationId]);
+        decrementUnread();
+      }
     } catch (_err) {
       console.error("Mark read error:", _err);
+      if (wasUnread) {
+        setUnreadMap((prev) => ({ ...prev, [notificationId]: true }));
+      }
     }
 
-    const { type, videoId } = notification;
+    const type = notification?.type || notification?.notificationType;
+    const videoId = getNotificationVideoId(notification);
+    const actor = getNotificationActor(notification);
+    const userId = normalizeVideoId(actor.id);
 
-    if (type && videoId) {
+    if (videoId) {
       const isCommentType =
         type === "comment" || type === "reply" || type === "comment_like";
       router.push({
@@ -134,10 +223,10 @@ export default function NotificationsScreen() {
           openComments: isCommentType ? "true" : "false",
         },
       });
-    } else if (notification.userId) {
+    } else if (userId) {
       router.push({
         pathname: "/(drawer)/profile",
-        params: { userId: notification.userId },
+        params: { userId: String(userId) },
       });
     }
   };
@@ -147,7 +236,8 @@ export default function NotificationsScreen() {
       await markAllNotificationsRead();
       const allRead = {};
       notifications.forEach((n) => {
-        allRead[n.id] = false;
+        const notificationId = getNotificationId(n);
+        if (notificationId) allRead[notificationId] = false;
       });
       setUnreadMap(allRead);
       resetGlobalUnread();
@@ -157,10 +247,14 @@ export default function NotificationsScreen() {
   };
 
   const renderItem = ({ item }) => {
-    const isUnread = unreadMap[item.id] !== false && !item.read;
-    const icon = TYPE_ICONS[item.type] || "🔔";
+    const notificationId = getNotificationId(item);
+    const actor = getNotificationActor(item);
+    const type = item?.type || item?.notificationType;
+    const isUnread = unreadMap[notificationId] !== false && !item.read;
+    const icon = TYPE_ICONS[type] || "🔔";
+    const notificationText = getNotificationText(item, actor.name);
 
-     return (
+    return (
       <TouchableOpacity
         style={[
           styles.notificationItem,
@@ -179,7 +273,7 @@ export default function NotificationsScreen() {
             </View>
           ) : (
             <View style={styles.avatarWrap}>
-              <UserAvatar uri={item.avatar} size={44} />
+              <UserAvatar uri={actor.avatar} size={44} />
               {icon ? <Text style={styles.typeIcon}>{icon}</Text> : null}
             </View>
           )}
@@ -187,12 +281,22 @@ export default function NotificationsScreen() {
           <View style={styles.textContainer}>
             <Text
               style={[
+                styles.actorName,
+                { color: isDark ? "#fff" : "#222" },
+                isUnread && { fontWeight: "700" },
+              ]}
+              numberOfLines={1}
+            >
+              {actor.name}
+            </Text>
+            <Text
+              style={[
                 styles.notificationText,
                 { color: isDark ? "#fff" : "#333" },
                 isUnread && { fontWeight: "600" },
               ]}
             >
-              {item.text || item.title || "New notification"}
+              {notificationText}
             </Text>
             <Text style={[styles.timeText, { color: isDark ? "#888" : "#999" }]}>
               {formatTimeAgo(item.createdAt || item.time)}
@@ -228,7 +332,9 @@ export default function NotificationsScreen() {
         <Text style={[styles.headerTitle, { color: isDark ? "#fff" : "#333" }]}>
           Notifications
         </Text>
-        {notifications.some((n) => !n.read) && (
+        {notifications.some(
+          (n) => unreadMap[getNotificationId(n)] !== false && !n.read,
+        ) && (
           <TouchableOpacity onPress={handleMarkAllRead}>
             <Check size={20} color="#05a31dff" />
           </TouchableOpacity>
@@ -239,6 +345,18 @@ export default function NotificationsScreen() {
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#05a31dff" />
         </View>
+      ) : loadError && notifications.length === 0 ? (
+        <View style={styles.center}>
+          <Text style={[styles.emptyText, { color: isDark ? "#bbb" : "#555" }]}>
+            {loadError}
+          </Text>
+          <TouchableOpacity
+            style={styles.retryButton}
+            onPress={() => loadNotifications(true)}
+          >
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
       ) : notifications.length === 0 ? (
         <View style={styles.center}>
           <Text style={[styles.emptyText, { color: isDark ? "#888" : "#999" }]}>
@@ -248,7 +366,9 @@ export default function NotificationsScreen() {
       ) : (
         <FlatList
           data={notifications}
-          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
+          keyExtractor={(item, index) =>
+            getNotificationId(item) || `notification-${index}`
+          }
           renderItem={renderItem}
           contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
           refreshControl={
@@ -295,6 +415,19 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 16,
     marginTop: 16,
+    textAlign: "center",
+    paddingHorizontal: 24,
+  },
+  retryButton: {
+    marginTop: 16,
+    backgroundColor: "#05a31dff",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  retryButtonText: {
+    color: "#fff",
+    fontWeight: "600",
   },
   notificationItem: {
     flexDirection: "row",
@@ -334,6 +467,11 @@ const styles = StyleSheet.create({
   },
   textContainer: {
     flex: 1,
+  },
+  actorName: {
+    fontSize: 14,
+    fontWeight: "600",
+    marginBottom: 2,
   },
   notificationText: {
     fontSize: 14,

@@ -1,29 +1,25 @@
-import React from "react";
-import { StyleSheet, Text, View, TouchableOpacity, Alert } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useState } from "react";
+import { StyleSheet, Text, View, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
-import Constants from "expo-constants";
+import { clearAuth } from "@/services/api";
 
 export default function Logout() {
   const router = useRouter();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [error, setError] = useState("");
 
   const handleLogout = async () => {
+    if (isLoggingOut) return;
+
+    setIsLoggingOut(true);
+    setError("");
     try {
-      await AsyncStorage.clear(); // Clear all stored data for a full logout
-      Alert.alert(
-        "Logged Out",
-        "You have been logged out successfully",
-        [
-          {
-            text: "OK",
-            onPress: () => router.replace("/"), // Navigate after alert is dismissed
-          },
-        ],
-        { cancelable: false }
-      );
+      await clearAuth();
+      router.replace("/(screens)");
     } catch (error) {
       console.error("Logout Error:", error);
-      Alert.alert("Error", "Something went wrong during logout");
+      setError("Could not log out. Please try again.");
+      setIsLoggingOut(false);
     }
   };
 
@@ -31,18 +27,32 @@ export default function Logout() {
     <View style={styles.container}>
       <Text style={styles.header}>Are you sure you want to log out?</Text>
 
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
       <View style={styles.buttons}>
         <TouchableOpacity
-          style={[styles.button, styles.logoutButton]}
+          style={[
+            styles.button,
+            styles.logoutButton,
+            isLoggingOut && styles.disabledButton,
+          ]}
           onPress={handleLogout}
+          disabled={isLoggingOut}
           activeOpacity={0.8}
         >
-          <Text style={styles.buttonText}>Log Out</Text>
+          <Text style={styles.buttonText}>
+            {isLoggingOut ? "Logging out..." : "Log Out"}
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.button, styles.cancelButton]}
+          style={[
+            styles.button,
+            styles.cancelButton,
+            isLoggingOut && styles.disabledButton,
+          ]}
           onPress={() => router.back()}
+          disabled={isLoggingOut}
           activeOpacity={0.8}
         >
           <Text style={styles.buttonText}>Cancel</Text>
@@ -67,6 +77,12 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 40,
   },
+  errorText: {
+    color: "#b00020",
+    fontSize: 14,
+    textAlign: "center",
+    marginBottom: 16,
+  },
   buttons: {
     width: "100%",
     maxWidth: 300,
@@ -87,6 +103,9 @@ const styles = StyleSheet.create({
   },
   cancelButton: {
     backgroundColor: "#1976d2",
+  },
+  disabledButton: {
+    opacity: 0.6,
   },
   buttonText: {
     color: "#fff",

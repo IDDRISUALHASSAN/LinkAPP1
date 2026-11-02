@@ -17,12 +17,91 @@ export function normalizeVideoId(value) {
   return null;
 }
 
+function normalizeMediaField(value) {
+  if (typeof value === "string") return value.trim() || null;
+  if (!value || typeof value !== "object") return null;
+  return (
+    normalizeMediaField(value.secure_url) ||
+    normalizeMediaField(value.secureUrl) ||
+    normalizeMediaField(value.url) ||
+    normalizeMediaField(value.uri)
+  );
+}
+
 export function normalizeVideo(video) {
   if (!video || typeof video !== "object") return null;
 
-  const id =
-    normalizeVideoId(video.id) ?? normalizeVideoId(video._id);
-  return id ? { ...video, id } : null;
+  const id = normalizeVideoId(video.id) ?? normalizeVideoId(video._id);
+  if (!id) return null;
+
+  const videoUrl =
+    normalizeMediaField(video.videoUrl) ||
+    normalizeMediaField(video.videoURL) ||
+    normalizeMediaField(video.video_url) ||
+    normalizeMediaField(video.mediaUrl) ||
+    normalizeMediaField(video.fileUrl) ||
+    normalizeMediaField(video.secure_url) ||
+    normalizeMediaField(video.secureUrl) ||
+    normalizeMediaField(video.url) ||
+    normalizeMediaField(video.video);
+  const thumbnailUrl =
+    normalizeMediaField(video.thumbnailUrl) ||
+    normalizeMediaField(video.thumbnailURL) ||
+    normalizeMediaField(video.thumbnail_url) ||
+    normalizeMediaField(video.thumbnail) ||
+    normalizeMediaField(video.posterUrl);
+
+  const backendUser = video.uploader || video.user || video.uploaderId;
+  const backendUserId =
+    typeof backendUser === "object"
+      ? normalizeVideoId(backendUser._id) ?? normalizeVideoId(backendUser.id)
+      : normalizeVideoId(backendUser);
+  const uploader = backendUser
+    ? {
+        id: backendUserId,
+        username:
+          (typeof backendUser === "object" &&
+            (backendUser.username || backendUser.name)) ||
+          video.uploaderName ||
+          "",
+        profilePic:
+          (typeof backendUser === "object" &&
+            (backendUser.profilePic || backendUser.avatar)) ||
+          video.uploaderAvatar ||
+          "",
+        followed: Boolean(
+          (typeof backendUser === "object" && backendUser.followed) ??
+            video.followed,
+        ),
+      }
+    : undefined;
+
+  const rawLikes =
+    typeof video.likesCount === "number"
+      ? video.likesCount
+      : Array.isArray(video.likes)
+        ? video.likes.length
+        : Number(video.likes) || 0;
+
+  return {
+    ...video,
+    id,
+    videoUrl: videoUrl || null,
+    thumbnailUrl: thumbnailUrl || null,
+    uploader,
+    liked: Boolean(video.isLiked ?? video.liked ?? false),
+    likes: rawLikes,
+    comments: Number(video.commentsCount ?? video.comments ?? 0),
+    shares: Number(video.shareCount ?? video.shares ?? 0),
+    downloads: Number(video.downloadCount ?? video.downloads ?? 0),
+  };
+}
+
+export function formatCount(count) {
+  const num = Number(count) || 0;
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  return num;
 }
 
 function requireVideoId(videoId) {
@@ -37,6 +116,25 @@ export async function fetchVideos(cursor = null, limit = 10) {
   params.append("limit", limit);
 
   return apiRequest(`/videos?${params.toString()}`);
+}
+
+export async function fetchRandomVideos(excludeIds = [], limit = 10) {
+  const body = JSON.stringify({
+    exclude: Array.isArray(excludeIds) ? excludeIds.slice(0, 200) : [],
+    limit: Math.min(Math.max(Number(limit) || 10, 1), 20),
+  });
+
+  return apiRequest("/videos/feed", {
+    method: "POST",
+    body,
+  });
+}
+
+export async function fetchFollowingVideos(cursor = null, limit = 10) {
+  const params = new URLSearchParams();
+  if (cursor) params.append("cursor", cursor);
+  params.append("limit", Math.min(Math.max(Number(limit) || 10, 1), 20));
+  return apiRequest(`/feed/following?${params.toString()}`);
 }
 
 export async function fetchVideo(videoId) {
@@ -66,11 +164,19 @@ export async function shareVideo(videoId) {
 }
 
 export async function followUploader(userId) {
-  return apiRequest(`/users/${userId}/follow`, { method: "POST" });
+  const normalizedId = normalizeVideoId(userId);
+  if (!normalizedId) throw new Error("Invalid user ID");
+  return apiRequest(`/users/${encodeURIComponent(normalizedId)}/follow`, {
+    method: "POST",
+  });
 }
 
 export async function unfollowUploader(userId) {
-  return apiRequest(`/users/${userId}/follow`, { method: "DELETE" });
+  const normalizedId = normalizeVideoId(userId);
+  if (!normalizedId) throw new Error("Invalid user ID");
+  return apiRequest(`/users/${encodeURIComponent(normalizedId)}/follow`, {
+    method: "DELETE",
+  });
 }
 
 export async function getVideoDownloadUrl(videoId) {
@@ -180,4 +286,6 @@ export async function fetchUserProfile(userId) {
   return apiRequest(`/users/${userId}`);
 }
 
-export { uploadWithProgress };
+export async function downloadMessageFile(messageId) {
+  return apiRequest(`/messages/${encodeURIComponent(messageId)}/download`);
+}

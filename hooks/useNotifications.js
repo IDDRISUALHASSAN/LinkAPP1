@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { AppState } from "react-native";
 import { useRouter } from "expo-router";
 import { isAuthError, clearAuth } from "../services/api";
@@ -14,6 +14,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export default function useNotifications() {
   const router = useRouter();
+  const notificationUnsubscribeRef = useRef(null);
   const [socketReady, setSocketReady] = useState(false);
 
   const handleAuthError = useCallback(async () => {
@@ -61,7 +62,8 @@ export default function useNotifications() {
     initSocket(userId);
     setSocketReady(true);
 
-    onNotification(() => {
+    notificationUnsubscribeRef.current?.();
+    notificationUnsubscribeRef.current = onNotification(() => {
       incrementGlobalUnread();
       fetchUnreadCount();
     });
@@ -81,6 +83,8 @@ export default function useNotifications() {
 
     return () => {
       appStateListener.remove();
+      notificationUnsubscribeRef.current?.();
+      notificationUnsubscribeRef.current = null;
     };
   }, [fetchUnreadCount, initSocketConnection]);
 

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 import {
-  fetchVideos,
-  likeVideo,
-  normalizeVideo,
-  normalizeVideoId,
-  unlikeVideo,
+    fetchFollowingVideos,
+    fetchRandomVideos,
+    likeVideo,
+    normalizeVideo,
+    normalizeVideoId,
+    unlikeVideo,
 } from "../services/videos";
 import { isAuthError } from "../services/api";
 
-export default function useVideoFeed(onAuthError) {
+export default function useVideoFeed(onAuthError, feedMode = "forYou") {
   const likingVideoIds = useRef(new Set());
   const [videos, setVideos] = useState([]);
   const [cursor, setCursor] = useState(null);
@@ -18,6 +19,7 @@ export default function useVideoFeed(onAuthError) {
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
+  const seenIdsRef = useRef(new Set());
 
   const loadVideos = useCallback(
     async (reset = false) => {
@@ -27,6 +29,7 @@ export default function useVideoFeed(onAuthError) {
         setVideos([]);
         setHasMore(true);
         setError(null);
+        seenIdsRef.current = new Set();
       } else if (!hasMore || loadingMore) {
         return;
       }
@@ -34,22 +37,45 @@ export default function useVideoFeed(onAuthError) {
       if (!reset) setLoadingMore(true);
 
       try {
-        const data = await fetchVideos(reset ? null : cursor, 10);
+        const exclude = Array.from(seenIdsRef.current);
+        const data =
+          feedMode === "following"
+            ? await fetchFollowingVideos(reset ? null : cursor, 10)
+            : await fetchRandomVideos(exclude, 10);
         const rawVideos = Array.isArray(data.videos)
           ? data.videos
           : Array.isArray(data.data)
             ? data.data
-            : [];
-        const newVideos = rawVideos.map(normalizeVideo).filter(Boolean);
-        const nextCursor = data.nextCursor || data.cursor || null;
+            : Array.isArray(data.items)
+              ? data.items
+              : [];
+        const newVideos = [];
+        const addedIds = new Set();
+        for (const v of rawVideos.map(normalizeVideo).filter(Boolean)) {
+          if (!seenIdsRef.current.has(v.id) && !addedIds.has(v.id)) {
+            addedIds.add(v.id);
+            newVideos.push(v);
+          }
+        }
+
+        if (reset || data.reshuffled) {
+          seenIdsRef.current = new Set();
+        }
+
+        newVideos.forEach((v) => seenIdsRef.current.add(v.id));
 
         if (reset) {
           setVideos(newVideos);
         } else {
           setVideos((prev) => [...prev, ...newVideos]);
         }
-        setCursor(nextCursor);
-        setHasMore(!!nextCursor);
+        const nextCursor = data.nextCursor ?? data.cursor ?? null;
+        const nextHasMore =
+          feedMode === "following"
+            ? data.hasMore ?? Boolean(nextCursor)
+            : newVideos.length > 0;
+        setCursor(feedMode === "following" ? nextCursor : null);
+        setHasMore(Boolean(nextHasMore));
         setError(null);
       } catch (err) {
         console.error("Load videos error:", err);
@@ -65,7 +91,7 @@ export default function useVideoFeed(onAuthError) {
         if (!reset) setLoadingMore(false);
       }
     },
-    [cursor, hasMore, loadingMore, onAuthError],
+    [cursor, feedMode, hasMore, loadingMore, onAuthError],
   );
 
   const loadVideosRef = useRef(loadVideos);
@@ -100,9 +126,29 @@ export default function useVideoFeed(onAuthError) {
 
       try {
         if (newLiked) {
-          await likeVideo(targetId);
+          const res = await likeVideo(targetId);
+          const serverCount = Number(res?.likesCount ?? res?.data?.likesCount);
+          if (!isNaN(serverCount)) {
+            setVideos((prevVideos) =>
+              prevVideos.map((video) =>
+                normalizeVideoId(video.id) === targetId
+                  ? { ...video, liked: true, likes: serverCount }
+                  : video,
+              ),
+            );
+          }
         } else {
-          await unlikeVideo(targetId);
+          const res = await unlikeVideo(targetId);
+          const serverCount = Number(res?.likesCount ?? res?.data?.likesCount);
+          if (!isNaN(serverCount)) {
+            setVideos((prevVideos) =>
+              prevVideos.map((video) =>
+                normalizeVideoId(video.id) === targetId
+                  ? { ...video, liked: false, likes: serverCount }
+                  : video,
+              ),
+            );
+          }
         }
       } catch (err) {
         console.error("Toggle video like error:", err);

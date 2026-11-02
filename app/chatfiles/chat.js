@@ -1,35 +1,48 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import * as Clipboard from "expo-clipboard";
 import Constants from "expo-constants";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { router, useLocalSearchParams } from "expo-router";
 import { VideoView, useVideoPlayer } from "expo-video";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    AppState,
-    Dimensions,
-    FlatList,
-    Image,
-    KeyboardAvoidingView,
-    Linking,
-    Modal,
-    Platform,
-    Pressable,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  AppState,
+  Dimensions,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as WebBrowser from "expo-web-browser";
 import { io } from "socket.io-client";
+import {
+  Heart,
+  Download,
+  Check,
+  Send,
+  Paperclip,
+  Image as ImageIcon,
+  FileText,
+} from "lucide-react-native";
 import { setActiveNotificationChat } from "../../services/notifications";
-import { getPlayableVideoUrl } from "../../services/media";
+import {
+  getCloudinaryAttachmentUrl,
+  getPlayableVideoUrl,
+} from "../../services/media";
+import { downloadMessageFile } from "../../services/videos";
 
 const { width, height } = Dimensions.get("window");
 
@@ -42,7 +55,7 @@ function AudioAttachmentPlayer({ uri }) {
       onPress={() => (status.playing ? player.pause() : player.play())}
       style={styles.audioBtn}
     >
-      <Text>{status.playing ? "⏸️ Pause" : "▶️ Play"}</Text>
+      <Text>{status.playing ? "Pause" : "Play"}</Text>
     </TouchableOpacity>
   );
 }
@@ -99,6 +112,304 @@ function VideoAttachmentPlayer({ uri, style }) {
   );
 }
 
+const isImage = (filename) =>
+  /\.(jpg|jpeg|png|gif|webp|bmp|tiff?)$/i.test(filename || "");
+const isVideo = (filename) =>
+  /\.(mp4|mov|avi|mkv|webm|3gp|3gpp)$/i.test(filename || "");
+const isAudio = (filename) =>
+  /\.(mp3|m4a|wav|aac|ogg|flac|wma)$/i.test(filename || "");
+const isPdf = (filename) => /\.pdf$/i.test(filename || "");
+
+const formatFileSize = (bytes) => {
+  if (!bytes || bytes === 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
+const getSafeFileName = (uri, fileName) => {
+  const fallbackName = uri?.split("/").pop()?.split("?")[0] || "download";
+  return (fileName || fallbackName).replace(/[\\/:*?\"<>|]/g, "_");
+};
+
+const triggerBrowserDownload = (href, name) => {
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = name;
+  link.rel = "noopener noreferrer";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+};
+
+const previewPdf = async (uri) => {
+  try {
+    const fileName = uri.split("/").pop().split("?")[0] || "download";
+    const correctedUrl = getCloudinaryAttachmentUrl(uri, fileName) || uri;
+    await WebBrowser.openBrowserAsync(correctedUrl);
+  } catch (error) {
+    console.error("Open PDF error:", error);
+    Alert.alert("Could not open PDF", "Download the file to view it.");
+  }
+};
+
+const downloadFile = async (uri, fileName) => {
+  if (!uri) return;
+  try {
+    const name = getSafeFileName(uri, fileName);
+    // For PDFs and raw files, open directly in browser (no fetch needed)
+    const isPdfOrRaw =
+      name.toLowerCase().endsWith(".pdf") || uri.includes("/raw/upload/");
+    if (isPdfOrRaw && Platform.OS === "web") {
+      const correctedUrl = getCloudinaryAttachmentUrl(uri, name) || uri;
+      const link = document.createElement("a");
+      link.href = correctedUrl;
+      link.download = name;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return;
+    }
+    const attachmentUrl = getCloudinaryAttachmentUrl(uri, name) || uri;
+    const downloadUrls = [...new Set([uri, attachmentUrl])];
+
+    // PDFs uploaded as images need the raw delivery path.
+    const fixedUrls = downloadUrls.map((url) => {
+      if (
+        url.includes("/image/upload/") &&
+        name.toLowerCase().endsWith(".pdf")
+      ) {
+        return url.replace("/image/upload/", "/raw/upload/");
+      }
+      return url;
+    });
+
+    if (Platform.OS === "web") {
+      if (typeof window === "undefined" || typeof document === "undefined") {
+        return;
+      }
+
+      let objectUrl = null;
+      let lastResponseError = null;
+      let shouldUseBrowserFallback = false;
+
+      try {
+        for (const downloadUrl of fixedUrls) {
+          try {
+            const response = await fetch(downloadUrl, {
+              mode: "cors",
+            });
+            if (!response.ok) {
+              lastResponseError = new Error(
+                `Download failed with HTTP ${response.status}`,
+              );
+              lastResponseError.status = response.status;
+              continue;
+            }
+
+            const blob = await response.blob();
+            if (!blob.size) throw new Error("The downloaded file is empty.");
+            objectUrl = URL.createObjectURL(blob);
+            triggerBrowserDownload(objectUrl, name);
+            return;
+          } catch (requestError) {
+            if (requestError?.status !== 401 && requestError?.status !== 403) {
+              shouldUseBrowserFallback = true;
+            }
+            lastResponseError = requestError;
+          }
+        }
+
+        if (shouldUseBrowserFallback && lastResponseError?.status == null) {
+          triggerBrowserDownload(attachmentUrl, name);
+          return;
+        }
+
+        throw lastResponseError || new Error("Could not download file.");
+      } finally {
+        if (objectUrl) {
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+        }
+      }
+    }
+
+    let downloadedFile;
+    let lastDownloadError;
+    for (const downloadUrl of fixedUrls) {
+      try {
+        downloadedFile = await FileSystem.File.downloadFileAsync(
+          downloadUrl,
+          new FileSystem.File(FileSystem.Paths.document, name),
+          { idempotent: true },
+        );
+        break;
+      } catch (error) {
+        lastDownloadError = error;
+      }
+    }
+
+    if (!downloadedFile) {
+      throw lastDownloadError || new Error("Could not download file.");
+    }
+
+    if (downloadedFile?.uri) {
+      Alert.alert("Download complete", `${name} saved to your device.`);
+    }
+  } catch (error) {
+    console.error("File download error:", {
+      fileUrl: uri,
+      status: error?.status,
+      message: error?.message,
+    });
+    const message =
+      error?.status === 401 || error?.status === 403
+        ? "The file host denied access. The server must make this file downloadable or provide a signed download link."
+        : error?.message || "Could not download file.";
+    Alert.alert("Download failed", message);
+  }
+};
+
+const FileMessage = ({ item }) => {
+  const uri = item.fileUrl || item.videoUrl || item.imageUrl || item.audioUrl;
+  if (!uri) return null;
+
+  const fileName =
+    item.fileName || uri.split("/").pop().split("?")[0] || "file";
+  const fileSize = formatFileSize(item.fileSize);
+
+  if (isImage(fileName)) {
+    return (
+      <View style={styles.filePreview}>
+        <Image source={{ uri }} style={styles.fileImage} resizeMode="cover" />
+        <FileMeta name={fileName} size={fileSize} />
+        <DownloadButton uri={uri} fileName={fileName} />
+      </View>
+    );
+  }
+  if (isVideo(fileName)) {
+    return (
+      <View style={styles.filePreview}>
+        <VideoAttachmentPlayer uri={uri} style={styles.fileVideo} />
+        <FileMeta name={fileName} size={fileSize} />
+        <DownloadButton uri={uri} fileName={fileName} />
+      </View>
+    );
+  }
+
+  if (isAudio(fileName)) {
+    return (
+      <View style={styles.filePreview}>
+        <AudioAttachmentPlayer uri={uri} />
+        <FileMeta name={fileName} size={fileSize} />
+        <DownloadButton uri={uri} fileName={fileName} />
+      </View>
+    );
+  }
+
+  if (isPdf(fileName)) {
+    return (
+      <View
+        style={[
+          styles.fileBox,
+          { flexDirection: "row", alignItems: "center", gap: 8 },
+        ]}
+      >
+        <FileText size={24} color="#ff3b30" />
+        <TouchableOpacity
+          style={{ flex: 1 }}
+          onPress={() => previewPdf(uri)}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${fileName}`}
+        >
+          <Text style={styles.fileText}>
+            {fileName.length > 30 ? fileName.slice(0, 27) + "..." : fileName}
+          </Text>
+          {fileSize ? (
+            <Text style={styles.fileSizeText}>{fileSize}</Text>
+          ) : null}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.downloadBtn}
+          onPress={async () => {
+            if (item._id) {
+              try {
+                const data = await downloadMessageFile(item._id);
+                if (data?.downloadUrl) {
+                  const link = document.createElement("a");
+                  link.href = data.downloadUrl;
+                  link.download = data.fileName || fileName;
+                  link.target = "_blank";
+                  link.rel = "noopener noreferrer";
+                  document.body.appendChild(link);
+                  link.click();
+                  link.remove();
+                }
+              } catch (err) {
+                console.error("PDF download error:", err);
+                Alert.alert("Download failed", "Could not download the PDF.");
+              }
+            } else {
+              downloadFile(uri, fileName);
+            }
+          }}
+          accessibilityLabel={`Download ${fileName}`}
+        >
+          <Download size={18} color="#666" />
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const Icon = isImage(fileName) ? ImageIcon : FileText;
+  return (
+    <TouchableOpacity
+      style={styles.fileBox}
+      onPress={() => downloadFile(uri, fileName)}
+      accessibilityRole="button"
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Icon size={20} color="#3b82f6" />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.fileText}>
+            {fileName.length > 30 ? fileName.slice(0, 27) + "..." : fileName}
+          </Text>
+          {fileSize ? (
+            <Text style={styles.fileSizeText}>{fileSize}</Text>
+          ) : null}
+        </View>
+        <Download size={16} color="#666" />
+      </View>
+    </TouchableOpacity>
+  );
+};
+
+function FileMeta({ name, size }) {
+  return (
+    <View style={styles.fileInfoRow}>
+      <Text style={styles.fileText}>
+        {name.length > 30 ? name.slice(0, 27) + "..." : name}
+      </Text>
+      {size ? <Text style={styles.fileSizeText}>{size}</Text> : null}
+    </View>
+  );
+}
+
+function DownloadButton({ uri, fileName }) {
+  return (
+    <TouchableOpacity
+      style={styles.downloadBtn}
+      onPress={() => downloadFile(uri, fileName)}
+      accessibilityLabel={`Download ${fileName}`}
+    >
+      <Download size={18} color="#666" />
+    </TouchableOpacity>
+  );
+}
+
 export default function Chat() {
   const { receiverId, receiverName, profilePic } = useLocalSearchParams();
   const API_URL = Constants.expoConfig.extra.API_URL;
@@ -115,9 +426,10 @@ export default function Chat() {
     visible: false,
     message: null,
   });
+  const [copied, setCopied] = useState(false);
+  const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
 
   const flatListRef = useRef(null);
-  const shakeAnim = useMemo(() => new Animated.Value(0), []);
   const insets = useSafeAreaInsets();
 
   const guessMimeTypeFromName = (name) => {
@@ -148,7 +460,6 @@ export default function Chat() {
 
   const getLocalPath = async (uri) => {
     if (!uri.startsWith("content://")) return uri;
-
     const tempFile = new FileSystem.File(
       FileSystem.Paths.cache,
       `${Date.now()}.tmp`,
@@ -167,9 +478,11 @@ export default function Chat() {
         const asset = result.assets[0];
         const uri = await getLocalPath(asset.uri);
         const name = asset.fileName || uri.split("/").pop();
-        const type = asset.type === "video" ? "video/mp4" : "image/jpeg";
+        const type =
+          asset.mimeType ||
+          (asset.type === "video" ? "video/mp4" : "image/jpeg");
         setPreviewFile(uri);
-        setPreviewMeta({ name, type });
+        setPreviewMeta({ name, type, file: asset.file });
       }
     } catch (err) {
       console.error("pickImage error:", err);
@@ -189,7 +502,7 @@ export default function Chat() {
         const name = file.name || uri.split("/").pop();
         const type = file.mimeType || guessMimeTypeFromName(name);
         setPreviewFile(uri);
-        setPreviewMeta({ name, type });
+        setPreviewMeta({ name, type, file: file.file });
       }
     } catch (err) {
       console.error("pickDocument error:", err);
@@ -206,12 +519,23 @@ export default function Chat() {
       const formData = new FormData();
       formData.append("from", userId);
       formData.append("to", receiverId);
-      formData.append("file", { uri: fileUri, name, type });
+      if (Platform.OS === "web") {
+        let browserFile = meta.file;
+        if (!browserFile) {
+          const fileResponse = await fetch(fileUri);
+          if (!fileResponse.ok) {
+            throw new Error("Could not read the selected file.");
+          }
+          browserFile = await fileResponse.blob();
+        }
+        formData.append("file", browserFile, name);
+      } else {
+        formData.append("file", { uri: fileUri, name, type });
+      }
 
       const res = await fetch(`${API_URL}/messages/send-file`, {
         method: "POST",
         headers: {
-          "Content-Type": "multipart/form-data",
           Authorization: token ? `Bearer ${token}` : "",
         },
         body: formData,
@@ -296,11 +620,34 @@ export default function Chat() {
       setMessages((prev) => prev.filter((m) => m._id !== deletedId));
     });
 
+    newSocket.on(
+      "messageLikeUpdate",
+      ({ messageId, userId: likerId, liked, likesCount }) => {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m._id === messageId
+              ? {
+                  ...m,
+                  liked: likerId === userId ? liked : m.liked,
+                  likesCount: likesCount,
+                  likes:
+                    likerId === userId
+                      ? liked
+                        ? [...(m.likes || []), likerId]
+                        : (m.likes || []).filter(
+                            (l) => l !== userId && l?._id !== userId,
+                          )
+                      : m.likes,
+                }
+              : m,
+          ),
+        );
+      },
+    );
+
     const handleAppStateChange = (nextAppState) => {
       const isActive = nextAppState === "active";
       sendPresence(isActive);
-      // Critical: clear activeChatId when the app is backgrounded so the
-      // notification handler does NOT suppress incoming banners from this chat.
       if (isActive) {
         setActiveNotificationChat(receiverId);
       } else {
@@ -327,7 +674,6 @@ export default function Chat() {
       if (!msgId) return;
 
       const token = await AsyncStorage.getItem("token");
-
       const res = await fetch(`${API_URL}/messages/${msgId}`, {
         method: "DELETE",
         headers: {
@@ -364,55 +710,131 @@ export default function Chat() {
     setInput("");
   };
 
-  const AnimatedMessage = ({ item, isMine }) => (
-    <Pressable
-      onPress={() =>
-        item.fileUrl?.match(/\.(jpg|jpeg|png|gif|webp)$/i)
-          ? setImageModal({ visible: true, uri: item.fileUrl })
-          : null
+  const handleLike = (item) => {
+    if (!socketRef.current || !userId || !item?._id) return;
+    const alreadyLiked = (item.likes || []).some(
+      (l) => l === userId || l?._id === userId,
+    );
+    socketRef.current.emit("likeMessage", {
+      messageId: item._id,
+      userId,
+      phoneNumber: userId,
+    });
+    setMessages((prev) =>
+      prev.map((m) =>
+        m._id === item._id
+          ? {
+              ...m,
+              liked: !alreadyLiked,
+              likesCount: alreadyLiked
+                ? Math.max(0, (m.likesCount || 0) - 1)
+                : (m.likesCount || 0) + 1,
+              likes: alreadyLiked
+                ? (m.likes || []).filter(
+                    (l) => l !== userId && l?._id !== userId,
+                  )
+                : [...(m.likes || []), userId],
+            }
+          : m,
+      ),
+    );
+  };
+
+  const copyToClipboard = async (text) => {
+    if (!text) return;
+    try {
+      await Clipboard.setStringAsync(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      Alert.alert("Copied", "Text copied to clipboard.");
+    }
+  };
+
+  const handleMessagePress = (item) => {
+    const uri = item.fileUrl || item.videoUrl || item.imageUrl || item.audioUrl;
+    const fileName = item.fileName || uri?.split("/").pop() || "";
+    if (item.text) {
+      copyToClipboard(item.text);
+    } else if (uri) {
+      if (isImage(fileName)) {
+        setImageModal({ visible: true, uri });
+      } else if (!isAudio(fileName) && !isVideo(fileName) && !isPdf(fileName)) {
+        downloadFile(uri, fileName);
       }
-      onLongPress={() => isMine && confirmDelete(item)}
-    >
-      <View
-        style={[
-          styles.messageBox,
-          isMine ? styles.myMessage : styles.theirMessage,
-        ]}
+    }
+  };
+
+  const AnimatedMessage = ({ item, isMine }) => {
+    const isLiked = (item.likes || []).some(
+      (l) => l === userId || l?._id === userId,
+    );
+    const likesCountNum = item.likesCount ?? (item.likes || []).length;
+
+    return (
+      <Pressable
+        onPress={() => handleMessagePress(item)}
+        onLongPress={() => isMine && confirmDelete(item)}
+        style={{
+          alignSelf: isMine ? "flex-end" : "flex-start",
+          maxWidth: "80%",
+        }}
       >
-        {item.fileUrl ? (
-          item.fileUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
-            <Image
-              source={{ uri: item.fileUrl }}
-              style={styles.imgMsg}
-              resizeMode="cover"
-            />
-          ) : item.fileUrl.match(/\.(mp4|mov)$/i) ? (
-            <VideoAttachmentPlayer uri={item.fileUrl} style={styles.videoMsg} />
-          ) : item.fileUrl.match(/\.(mp3|m4a|wav)$/i) ? (
-            <AudioAttachmentPlayer uri={item.fileUrl} />
-          ) : (
-            <TouchableOpacity
-              onPress={() => Linking.openURL(item.fileUrl)}
-              style={styles.fileBox}
+        <View
+          style={[
+            styles.messageBox,
+            isMine ? styles.myMessage : styles.theirMessage,
+          ]}
+        >
+          {item.text ? (
+            <Text
+              style={styles.messageText}
+              onLongPress={() => copyToClipboard(item.text)}
             >
-              <Text style={styles.fileText}>
-                📎 {item.fileName || "View file"}
-              </Text>
+              {item.text}
+            </Text>
+          ) : null}
+          {item.fileUrl || item.videoUrl || item.imageUrl || item.audioUrl ? (
+            <FileMessage item={item} />
+          ) : null}
+          <View style={styles.messageFooter}>
+            <Text style={styles.timestamp}>
+              {new Date(item.timestamp || item.createdAt).toLocaleTimeString(
+                [],
+                {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                },
+              )}
+            </Text>
+            <TouchableOpacity
+              onPress={() => handleLike(item)}
+              style={styles.likeButton}
+              activeOpacity={0.7}
+              hitSlop={8}
+              accessibilityLabel={isLiked ? "Unlike" : "Like"}
+            >
+              <Heart
+                size={16}
+                color={isLiked ? "#ff3b30" : "#888"}
+                fill={isLiked ? "#ff3b30" : "none"}
+              />
+              {likesCountNum > 0 && (
+                <Text
+                  style={[styles.likeCount, isLiked && styles.likeCountActive]}
+                >
+                  {likesCountNum}
+                </Text>
+              )}
             </TouchableOpacity>
-          )
-        ) : (
-          <Text style={styles.messageText}>{item.text}</Text>
-        )}
-        <Text style={styles.timestamp}>
-          {new Date(item.timestamp || item.createdAt).toLocaleTimeString()}
-        </Text>
-      </View>
-    </Pressable>
-  );
+          </View>
+        </View>
+      </Pressable>
+    );
+  };
 
   return (
     <>
-      {/* Delete modal */}
       <Modal visible={deleteModal.visible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
@@ -441,7 +863,6 @@ export default function Chat() {
         </View>
       </Modal>
 
-      {/* Image zoom */}
       <Modal
         visible={imageModal.visible}
         transparent
@@ -459,7 +880,13 @@ export default function Chat() {
         </Pressable>
       </Modal>
 
-      {/* Preview before send */}
+      {copied && (
+        <View style={styles.copyToast}>
+          <Check size={16} color="#fff" />
+          <Text style={styles.copyToastText}>Copied to clipboard</Text>
+        </View>
+      )}
+
       {previewFile && (
         <View style={styles.previewOverlay}>
           {previewMeta?.type?.startsWith("image/") ? (
@@ -476,7 +903,10 @@ export default function Chat() {
           ) : previewMeta?.type?.startsWith("audio/") ? (
             <AudioAttachmentPlayer uri={previewFile} />
           ) : (
-            <Text style={styles.previewFileText}>📄 {previewMeta?.name}</Text>
+            <View style={styles.previewFileRow}>
+              <FileText size={48} color="#fff" />
+              <Text style={styles.previewFileText}>{previewMeta?.name}</Text>
+            </View>
           )}
           {uploading ? (
             <ActivityIndicator
@@ -548,67 +978,64 @@ export default function Chat() {
           }
         />
 
-        <Animated.View
+        {attachmentMenuVisible && (
+          <View style={styles.attachmentMenu}>
+            <TouchableOpacity
+              style={styles.attachmentMenuItem}
+              onPress={() => {
+                setAttachmentMenuVisible(false);
+                pickImage();
+              }}
+              accessibilityRole="button"
+            >
+              <ImageIcon size={20} color="#666" />
+              <Text style={styles.attachmentMenuText}>Image / Video</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.attachmentMenuItem}
+              onPress={() => {
+                setAttachmentMenuVisible(false);
+                pickDocument();
+              }}
+              accessibilityRole="button"
+            >
+              <FileText size={20} color="#666" />
+              <Text style={styles.attachmentMenuText}>Document</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <View
           style={[
             styles.inputContainer,
             {
               paddingBottom: Math.max(insets.bottom, 10),
-              transform: [{ translateX: shakeAnim }],
             },
           ]}
         >
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={() => setAttachmentMenuVisible((visible) => !visible)}
+            accessibilityRole="button"
+            accessibilityLabel="Choose an attachment"
+          >
+            <Paperclip size={20} color="#666" />
+          </TouchableOpacity>
+
           <TextInput
             style={styles.textInput}
             value={input}
             onChangeText={setInput}
             placeholder="Type a message..."
-            placeholderTextColor="#7a7a7a"
+            placeholderTextColor="#999"
             multiline
             maxLength={500}
           />
 
-          {/* Single button that opens options for image or document */}
-          <TouchableOpacity
-            style={styles.iconButton}
-            onPress={() =>
-              Alert.alert(
-                "Attach",
-                "Choose a file type to attach",
-                [
-                  { text: "Image / Video", onPress: pickImage },
-                  { text: "Document", onPress: pickDocument },
-                  { text: "Cancel", style: "cancel" },
-                ],
-                { cancelable: true },
-              )
-            }
-            onPressIn={() => {
-              Animated.sequence([
-                Animated.timing(shakeAnim, {
-                  toValue: -5,
-                  duration: 50,
-                  useNativeDriver: true,
-                }),
-                Animated.timing(shakeAnim, {
-                  toValue: 5,
-                  duration: 100,
-                  useNativeDriver: true,
-                }),
-                Animated.timing(shakeAnim, {
-                  toValue: 0,
-                  duration: 50,
-                  useNativeDriver: true,
-                }),
-              ]).start();
-            }}
-          >
-            <Text style={{ fontSize: 22 }}>📎</Text>
-          </TouchableOpacity>
-
           <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
-            <Text style={styles.sendText}>➤</Text>
+            <Send size={18} color="#fff" />
           </TouchableOpacity>
-        </Animated.View>
+        </View>
       </KeyboardAvoidingView>
     </>
   );
@@ -647,44 +1074,97 @@ const styles = StyleSheet.create({
 
   /** MESSAGE BUBBLES **/
   messageBox: {
-    maxWidth: "75%",
-    marginVertical: 6,
-    marginHorizontal: 12,
+    marginVertical: 4,
+    marginHorizontal: 8,
     padding: 10,
     borderRadius: 16,
+    maxWidth: "80%",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 1,
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 1,
   },
   myMessage: {
     backgroundColor: "#cd640eff",
     alignSelf: "flex-end",
-    borderBottomRightRadius: 0,
+    borderBottomRightRadius: 4,
   },
   theirMessage: {
     backgroundColor: "#3065b9ff",
     alignSelf: "flex-start",
-    borderBottomLeftRadius: 0,
+    borderBottomLeftRadius: 4,
   },
   messageText: {
     fontSize: 16,
     color: "#222",
+    lineHeight: 22,
   },
   timestamp: {
     fontSize: 10,
-    color: "#555",
+    color: "rgba(255,255,255,0.7)",
     alignSelf: "flex-end",
-    marginTop: 4,
+    marginTop: 2,
+  },
+  messageFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    alignSelf: "flex-end",
+    marginTop: 2,
+  },
+  likeButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  likeCount: {
+    fontSize: 10,
+    color: "#888",
+  },
+  likeCountActive: {
+    color: "#ff3b30",
+    fontWeight: "600",
   },
 
-  /** MEDIA MESSAGES **/
-  imgMsg: {
+  /** FILE MESSAGES **/
+  filePreview: {
+    marginVertical: 6,
+  },
+  fileInfoRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 4,
+  },
+  fileText: {
+    fontSize: 14,
+    color: "#333",
+    fontWeight: "500",
+  },
+  fileSizeText: {
+    fontSize: 11,
+    color: "#888",
+  },
+  downloadBtn: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.08)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  fileImage: {
     width: 220,
-    height: 200,
+    height: 180,
     borderRadius: 10,
   },
-  videoMsg: {
+  fileVideo: {
     width: 250,
     height: 200,
     borderRadius: 10,
@@ -694,6 +1174,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     padding: 16,
+    backgroundColor: "#000",
+    borderRadius: 8,
   },
   videoAttachmentErrorText: {
     color: "#fff",
@@ -703,26 +1185,47 @@ const styles = StyleSheet.create({
     padding: 10,
     backgroundColor: "#e7f0f7",
     borderRadius: 8,
+    alignItems: "center",
   },
   fileBox: {
-    padding: 8,
+    padding: 10,
     backgroundColor: "#e8f0fe",
     borderRadius: 8,
-  },
-  fileText: {
-    color: "#333",
-    fontWeight: "500",
   },
 
   /** INPUT AREA **/
   inputContainer: {
     flexDirection: "row",
     alignItems: "flex-end",
-    backgroundColor: "#f2f2f2",
-    paddingHorizontal: 10,
+    backgroundColor: "#f0f0f0",
+    paddingHorizontal: 8,
     paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: "#ddd",
+  },
+  attachmentMenu: {
+    alignSelf: "flex-start",
+    marginLeft: 10,
+    marginBottom: 8,
+    paddingVertical: 4,
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+  },
+  attachmentMenuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  attachmentMenuText: {
+    color: "#333",
+    fontSize: 14,
   },
   textInput: {
     flex: 1,
@@ -730,12 +1233,12 @@ const styles = StyleSheet.create({
     maxHeight: 120,
     fontSize: 16,
     lineHeight: 22,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     backgroundColor: "#fff",
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: "#e5e5e5",
+    borderColor: "#e0e0e0",
     marginRight: 8,
     color: "#111",
     textAlignVertical: "center",
@@ -745,31 +1248,27 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: "#ffffff",
+    backgroundColor: "#fff",
     justifyContent: "center",
     alignItems: "center",
-    marginHorizontal: 4,
+    marginHorizontal: 2,
     borderWidth: 1,
     borderColor: "#e4e4e4",
+    elevation: 1,
   },
   sendButton: {
     width: 42,
     height: 42,
     backgroundColor: "#25D366",
     borderRadius: 21,
-    marginLeft: 4,
     justifyContent: "center",
     alignItems: "center",
+    marginLeft: 4,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 4,
-    elevation: 2,
-  },
-  sendText: {
-    color: "#fff",
-    fontWeight: "bold",
-    fontSize: 16,
+    elevation: 3,
   },
 
   /** PREVIEW OVERLAY **/
@@ -787,27 +1286,33 @@ const styles = StyleSheet.create({
   previewImage: {
     width: 250,
     height: 250,
-    borderRadius: 10,
+    borderRadius: 12,
   },
   previewVideo: {
     width: 400,
     height: 600,
+    borderRadius: 12,
+  },
+  previewFileRow: {
+    alignItems: "center",
+    gap: 12,
   },
   previewFileText: {
     color: "#fff",
     fontSize: 16,
-    marginBottom: 10,
+    textAlign: "center",
+    marginTop: 12,
   },
   previewButtons: {
     flexDirection: "row",
-    marginTop: 20,
+    marginTop: 24,
+    gap: 12,
   },
   sendBtn: {
     backgroundColor: "#25D366",
     paddingVertical: 10,
     paddingHorizontal: 24,
     borderRadius: 25,
-    marginHorizontal: 8,
   },
   sendTxt: {
     color: "#fff",
@@ -818,7 +1323,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 24,
     borderRadius: 25,
-    marginHorizontal: 8,
   },
   cancelTxt: {
     color: "#fff",
@@ -855,8 +1359,28 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   zoomImage: {
-    width: width * 1,
-    height: height * 1,
+    width: width,
+    height: height,
     borderRadius: 10,
+  },
+
+  /** COPY TOAST **/
+  copyToast: {
+    position: "absolute",
+    bottom: 80,
+    alignSelf: "center",
+    backgroundColor: "rgba(0,0,0,0.8)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 24,
+    zIndex: 1000,
+  },
+  copyToastText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "500",
   },
 });
