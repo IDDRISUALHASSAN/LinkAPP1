@@ -347,14 +347,18 @@ const FileMessage = ({ item }) => {
                   document.body.appendChild(link);
                   link.click();
                   link.remove();
+                  return;
                 }
               } catch (err) {
-                console.error("PDF download error:", err);
-                Alert.alert("Download failed", "Could not download the PDF.");
+                // Fall back to direct Cloudinary download if auth fails
+                if (err.status === 401 || err.status === 403) {
+                  downloadFile(uri, fileName);
+                  return;
+                }
+                throw err;
               }
-            } else {
-              downloadFile(uri, fileName);
             }
+            downloadFile(uri, fileName);
           }}
           accessibilityLabel={`Download ${fileName}`}
         >
