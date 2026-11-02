@@ -75,9 +75,26 @@ export function getPlayableVideoUrl(value) {
   }
 }
 
+export function isSignedCloudinaryUrl(value) {
+  const url = normalizeMediaUrl(value);
+  if (!url) return false;
+
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname.toLowerCase().endsWith("cloudinary.com") &&
+      (/\/s--[^/]+--\//.test(parsed.pathname) ||
+        parsed.searchParams.has("__cld_token__"))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function getCloudinaryAttachmentUrl(value, fileName = "download") {
   const url = normalizeMediaUrl(value);
   if (!url) return null;
+  if (isSignedCloudinaryUrl(url)) return url;
 
   try {
     const parsed = new URL(url);
@@ -89,19 +106,9 @@ export function getCloudinaryAttachmentUrl(value, fileName = "download") {
 
     const resourceTypeSegment = segments[uploadIndex - 1];
 
-    // PDFs and other raw files uploaded as images need the raw delivery path
-    const isRawFileByName =
-      /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|zip|rar)$/i.test(fileName);
-
     const isAlreadyRaw = resourceTypeSegment === "raw";
-    const needsRawRewrite = isRawFileByName && resourceTypeSegment === "image";
-
-    if (needsRawRewrite) {
-      segments[uploadIndex - 1] = "raw";
-    }
-
-    if (isAlreadyRaw || needsRawRewrite) {
-      // Raw files don't support fl_attachment transformation
+    if (isAlreadyRaw) {
+      // Raw resources must keep their original delivery path and signature.
       return parsed.toString();
     }
 

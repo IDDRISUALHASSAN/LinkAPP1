@@ -38,9 +38,11 @@ import {
   FileText,
 } from "lucide-react-native";
 import { setActiveNotificationChat } from "../../services/notifications";
+import { clearAuth, isAuthError } from "../../services/api";
 import {
   getCloudinaryAttachmentUrl,
   getPlayableVideoUrl,
+  isSignedCloudinaryUrl,
 } from "../../services/media";
 import { downloadMessageFile } from "../../services/videos";
 
@@ -144,14 +146,59 @@ const triggerBrowserDownload = (href, name) => {
   link.remove();
 };
 
-const previewPdf = async (uri) => {
+const getPdfPreviewUrl = (uri) => {
+  if (!uri || isSignedCloudinaryUrl(uri)) return uri;
+
   try {
-    const fileName = uri.split("/").pop().split("?")[0] || "download";
-    const correctedUrl = getCloudinaryAttachmentUrl(uri, fileName) || uri;
-    await WebBrowser.openBrowserAsync(correctedUrl);
+    const url = new URL(uri);
+    if (url.hostname.toLowerCase().endsWith("cloudinary.com")) {
+      url.pathname = url.pathname.replace("/image/upload/", "/raw/upload/");
+    }
+    return url.toString();
+  } catch {
+    return uri;
+  }
+};
+
+const getMessageDownloadUrl = async (item) => {
+  const data = await downloadMessageFile(item._id);
+  return {
+    url:
+      data?.downloadUrl ||
+      data?.fileUrl ||
+      data?.url ||
+      data?.data?.downloadUrl ||
+      data?.data?.fileUrl ||
+      data?.data?.url,
+    fileName: data?.fileName || data?.data?.fileName,
+  };
+};
+
+const openPdf = async (uri) => {
+  if (!uri) return;
+
+  const previewUrl = getPdfPreviewUrl(uri);
+  if (Platform.OS === "web") {
+    const newWindow = window.open(previewUrl, "_blank", "noopener,noreferrer");
+    if (!newWindow) {
+      Alert.alert(
+        "Could not open PDF",
+        "Your browser blocked the new tab. Allow pop-ups and try again.",
+      );
+    }
+    return;
+  }
+
+  try {
+    await WebBrowser.openBrowserAsync(previewUrl);
   } catch (error) {
     console.error("Open PDF error:", error);
-    Alert.alert("Could not open PDF", "Download the file to view it.");
+    Alert.alert(
+      "Could not open PDF",
+      error?.status === 401 || error?.status === 403
+        ? "The file server denied access. Please sign in again or ask the server to provide a secure PDF viewing link."
+        : error?.message || "Try downloading the file to view it.",
+    );
   }
 };
 
@@ -159,34 +206,16 @@ const downloadFile = async (uri, fileName) => {
   if (!uri) return;
   try {
     const name = getSafeFileName(uri, fileName);
-    // For PDFs and raw files, open directly in browser (no fetch needed)
-    const isPdfOrRaw =
-      name.toLowerCase().endsWith(".pdf") || uri.includes("/raw/upload/");
-    if (isPdfOrRaw && Platform.OS === "web") {
-      const correctedUrl = getCloudinaryAttachmentUrl(uri, name) || uri;
-      const link = document.createElement("a");
-      link.href = correctedUrl;
-      link.download = name;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      return;
-    }
+    const token = await AsyncStorage.getItem("token");
+    const signedCloudinaryUrl = isSignedCloudinaryUrl(uri);
+    const authHeaders =
+      token && !signedCloudinaryUrl
+        ? { Authorization: `Bearer ${token}` }
+        : {};
     const attachmentUrl = getCloudinaryAttachmentUrl(uri, name) || uri;
     const downloadUrls = [...new Set([uri, attachmentUrl])];
 
-    // PDFs uploaded as images need the raw delivery path.
-    const fixedUrls = downloadUrls.map((url) => {
-      if (
-        url.includes("/image/upload/") &&
-        name.toLowerCase().endsWith(".pdf")
-      ) {
-        return url.replace("/image/upload/", "/raw/upload/");
-      }
-      return url;
-    });
+    const fixedUrls = downloadUrls;
 
     if (Platform.OS === "web") {
       if (typeof window === "undefined" || typeof document === "undefined") {
@@ -202,6 +231,7 @@ const downloadFile = async (uri, fileName) => {
           try {
             const response = await fetch(downloadUrl, {
               mode: "cors",
+              headers: authHeaders,
             });
             if (!response.ok) {
               lastResponseError = new Error(
@@ -244,7 +274,7 @@ const downloadFile = async (uri, fileName) => {
         downloadedFile = await FileSystem.File.downloadFileAsync(
           downloadUrl,
           new FileSystem.File(FileSystem.Paths.document, name),
-          { idempotent: true },
+          { idempotent: true, headers: authHeaders },
         );
         break;
       } catch (error) {
@@ -271,6 +301,31 @@ const downloadFile = async (uri, fileName) => {
         : error?.message || "Could not download file.";
     Alert.alert("Download failed", message);
   }
+};
+
+const downloadMessageAttachment = async (item, uri, fileName) => {
+  if (item?._id) {
+    try {
+      const attachment = await getMessageDownloadUrl(item);
+      if (attachment.url) {
+        await downloadFile(attachment.url, attachment.fileName || fileName);
+        return;
+      }
+    } catch (error) {
+      // If the signed-download endpoint rejected auth, do not fall through to
+      // direct Cloudinary fetch — restricted resources return 401 there too.
+      if (error?.status === 401 || error?.status === 403) {
+        Alert.alert(
+          "Sign in required",
+          "Please sign in again to download this file.",
+        );
+        return;
+      }
+      console.warn("Message download endpoint unavailable:", error);
+    }
+  }
+
+  await downloadFile(uri, fileName);
 };
 
 const FileMessage = ({ item }) => {
@@ -321,7 +376,7 @@ const FileMessage = ({ item }) => {
         <FileText size={24} color="#ff3b30" />
         <TouchableOpacity
           style={{ flex: 1 }}
-          onPress={() => previewPdf(uri)}
+          onPress={() => openPdf(uri)}
           accessibilityRole="button"
           accessibilityLabel={`Open ${fileName}`}
         >
@@ -334,32 +389,7 @@ const FileMessage = ({ item }) => {
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.downloadBtn}
-          onPress={async () => {
-            if (item._id) {
-              try {
-                const data = await downloadMessageFile(item._id);
-                if (data?.downloadUrl) {
-                  const link = document.createElement("a");
-                  link.href = data.downloadUrl;
-                  link.download = data.fileName || fileName;
-                  link.target = "_blank";
-                  link.rel = "noopener noreferrer";
-                  document.body.appendChild(link);
-                  link.click();
-                  link.remove();
-                  return;
-                }
-              } catch (err) {
-                // Fall back to direct Cloudinary download if auth fails
-                if (err.status === 401 || err.status === 403) {
-                  downloadFile(uri, fileName);
-                  return;
-                }
-                throw err;
-              }
-            }
-            downloadFile(uri, fileName);
-          }}
+          onPress={() => downloadMessageAttachment(item, uri, fileName)}
           accessibilityLabel={`Download ${fileName}`}
         >
           <Download size={18} color="#666" />
@@ -515,9 +545,26 @@ export default function Chat() {
   };
 
   const sendFile = async (fileUri, meta) => {
+    let token;
+    try {
+      token = await AsyncStorage.getItem("token");
+    } catch (storageError) {
+      console.error("Could not read auth session:", storageError);
+      Alert.alert("Sign in required", "Please sign in before sending files.");
+      return;
+    }
+
+    if (!token) {
+      Alert.alert(
+        "Sign in required",
+        "Your session is missing or expired. Please sign in before sending files.",
+        [{ text: "Sign in", onPress: () => router.replace("/") }],
+      );
+      return;
+    }
+
     try {
       setUploading(true);
-      const token = await AsyncStorage.getItem("token");
       const name = meta.name || fileUri.split("/").pop();
       const type = meta.type || guessMimeTypeFromName(name);
       const formData = new FormData();
@@ -546,8 +593,21 @@ export default function Chat() {
       });
 
       const text = await res.text();
-      if (!res.ok) throw new Error(text);
-      const data = JSON.parse(text);
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { message: text };
+      }
+
+      if (!res.ok) {
+        const requestError = new Error(
+          data.message || text || `Upload failed with HTTP ${res.status}`,
+        );
+        requestError.status = res.status;
+        throw requestError;
+      }
+
       if (data.success) {
         socketRef.current?.emit("message", data.message);
         setMessages((prev) => [...prev, data.message]);
@@ -558,7 +618,16 @@ export default function Chat() {
       }
     } catch (err) {
       console.error("sendFile error:", err);
-      Alert.alert("Upload failed", err.message || "Error uploading file");
+      if (isAuthError(err)) {
+        await clearAuth();
+        Alert.alert(
+          "Session expired",
+          "Please sign in again before sending files.",
+          [{ text: "Sign in", onPress: () => router.replace("/") }],
+        );
+      } else {
+        Alert.alert("Upload failed", err.message || "Error uploading file");
+      }
     } finally {
       setUploading(false);
     }
