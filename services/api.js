@@ -28,7 +28,9 @@ export async function clearAuth() {
 }
 
 export async function getAuthHeaders() {
-  const token = await AsyncStorage.getItem("token");
+  const token =
+    (await AsyncStorage.getItem("token")) ||
+    (await AsyncStorage.getItem("userToken"));
   return {
     Authorization: token ? `Bearer ${token}` : "",
   };

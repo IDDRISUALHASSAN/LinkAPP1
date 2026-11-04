@@ -56,17 +56,32 @@ export default function Home() {
       if (!data.success) {
         Alert.alert("Login Failed", data.message || "Invalid credentials");
       } else {
+        const authToken =
+          data.token ||
+          data.accessToken ||
+          data.data?.token ||
+          data.data?.accessToken ||
+          data.user?.token;
+        if (!authToken) {
+          Alert.alert(
+            "Login incomplete",
+            "The server reported success but did not return an authentication token. Please try again or contact support.",
+          );
+          return;
+        }
+
         Alert.alert("Success", "Login successful ");
 
-        await AsyncStorage.setItem("token", data.token);
+        await AsyncStorage.setItem("token", String(authToken));
         await AsyncStorage.setItem("phoneNumber", PhoneNumber);
 
-        if (data.userId) {
-          await AsyncStorage.setItem("userId", data.userId);
+        const userId = data.userId || data.user?._id;
+        if (userId) {
+          await AsyncStorage.setItem("userId", String(userId));
         }
 
         await registerCurrentDeviceForPush(API_URL, {
-          userId: data.userId,
+          userId,
           phoneNumber: PhoneNumber,
         });
 

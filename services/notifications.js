@@ -139,6 +139,8 @@ export async function registerPushTokenWithBackend(
 }
 
 export async function registerCurrentDeviceForPush(apiUrl, user = {}) {
+  if (!Notifications) return false;
+
   const storedUserId = await AsyncStorage.getItem("userId");
   const storedPhoneNumber = await AsyncStorage.getItem("phoneNumber");
   const authToken =

@@ -87,7 +87,10 @@ export default function Conversations() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.name}>{item.name || item.phone}</Text>
                 <Text style={styles.lastMessage} numberOfLines={1}>
-                  {item.lastMessage || "No messages yet"}
+                  {item.lastMessage ||
+                    (item.lastMessageHasFile
+                      ? "📎 File attachment"
+                      : "No messages yet")}
                 </Text>
               </View>
 

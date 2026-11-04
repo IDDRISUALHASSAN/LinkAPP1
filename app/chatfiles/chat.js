@@ -174,8 +174,48 @@ const getMessageDownloadUrl = async (item) => {
   };
 };
 
-const openPdf = async (uri) => {
+const openPdf = async (uri, item) => {
   if (!uri) return;
+
+  if (item?._id) {
+    try {
+      const attachment = await getMessageDownloadUrl(item);
+      if (attachment.url) {
+        if (Platform.OS === "web") {
+          const newWindow = window.open(
+            attachment.url,
+            "_blank",
+            "noopener,noreferrer",
+          );
+          if (!newWindow) {
+            Alert.alert(
+              "Could not open PDF",
+              "Your browser blocked the new tab. Allow pop-ups and try again.",
+            );
+          }
+          return;
+        }
+        await WebBrowser.openBrowserAsync(attachment.url);
+        return;
+      }
+    } catch (error) {
+      if (error?.status === 401) {
+        Alert.alert(
+          "Sign in required",
+          "Your session was rejected. Please sign in again.",
+        );
+        return;
+      }
+      if (error?.status === 403) {
+        Alert.alert(
+          "Message access denied",
+          "The server says your account is not a participant in this message. If you believe this is a mistake, contact support.",
+        );
+        return;
+      }
+      console.warn("Message download endpoint unavailable:", error);
+    }
+  }
 
   const previewUrl = getPdfPreviewUrl(uri);
   if (Platform.OS === "web") {
@@ -209,9 +249,7 @@ const downloadFile = async (uri, fileName) => {
     const token = await AsyncStorage.getItem("token");
     const signedCloudinaryUrl = isSignedCloudinaryUrl(uri);
     const authHeaders =
-      token && !signedCloudinaryUrl
-        ? { Authorization: `Bearer ${token}` }
-        : {};
+      token && !signedCloudinaryUrl ? { Authorization: `Bearer ${token}` } : {};
     const attachmentUrl = getCloudinaryAttachmentUrl(uri, name) || uri;
     const downloadUrls = [...new Set([uri, attachmentUrl])];
 
@@ -314,10 +352,17 @@ const downloadMessageAttachment = async (item, uri, fileName) => {
     } catch (error) {
       // If the signed-download endpoint rejected auth, do not fall through to
       // direct Cloudinary fetch — restricted resources return 401 there too.
-      if (error?.status === 401 || error?.status === 403) {
+      if (error?.status === 401) {
         Alert.alert(
           "Sign in required",
           "Please sign in again to download this file.",
+        );
+        return;
+      }
+      if (error?.status === 403) {
+        Alert.alert(
+          "Message access denied",
+          "Your account is not listed as a participant in this message.",
         );
         return;
       }
@@ -376,7 +421,7 @@ const FileMessage = ({ item }) => {
         <FileText size={24} color="#ff3b30" />
         <TouchableOpacity
           style={{ flex: 1 }}
-          onPress={() => openPdf(uri)}
+          onPress={() => openPdf(uri, item)}
           accessibilityRole="button"
           accessibilityLabel={`Open ${fileName}`}
         >
@@ -686,6 +731,16 @@ export default function Chat() {
       setTimeout(
         () => flatListRef.current?.scrollToEnd({ animated: true }),
         100,
+      );
+    });
+
+    newSocket.on("messageSent", (msg) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.timestamp === msg.timestamp && m.from === msg.from
+            ? { ...m, ...msg }
+            : m,
+        ),
       );
     });
 
