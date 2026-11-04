@@ -2,6 +2,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { useFocusEffect, useRouter } from "expo-router";
 import React, { useState } from "react";
+import { io } from "socket.io-client";
+import {
+  formatLastSeen,
+  usePresenceClock,
+} from "../../../services/presence";
 import {
   FlatList,
   Image,
@@ -13,8 +18,15 @@ import {
 
 const API_URL = Constants.expoConfig.extra.API_URL;
 
+const formatPresence = (user, now) => {
+  if (user.online) return "Online";
+  const lastSeen = formatLastSeen(user.lastSeen, now);
+  return lastSeen === "Offline" ? lastSeen : `Last seen ${lastSeen}`;
+};
+
 export default function Conversations() {
   const [conversations, setConversations] = useState([]);
+  const now = usePresenceClock();
   const router = useRouter();
 
   // 🔹 Fetch conversations
@@ -51,7 +63,69 @@ export default function Conversations() {
   // Fetch on mount and whenever the screen regains focus.
   useFocusEffect(
     React.useCallback(() => {
+      let presenceSocket;
+      let cancelled = false;
       loadConversations();
+
+      const connectPresence = async () => {
+        try {
+          const stored = await AsyncStorage.getItem("phoneNumber");
+          let phone = stored;
+          if (stored) {
+            try {
+              phone = JSON.parse(stored);
+            } catch {
+              phone = stored;
+            }
+          }
+          if (!phone || cancelled) return;
+
+          presenceSocket = io(API_URL, { transports: ["websocket"] });
+          presenceSocket.on("connect", () => {
+            presenceSocket.emit("login", phone);
+          });
+          presenceSocket.on("presenceUpdate", (presence) => {
+            if (!presence?.phoneNumber) return;
+            setConversations((current) =>
+              current.map((conversation) =>
+                conversation.phone === presence.phoneNumber
+                  ? {
+                      ...conversation,
+                      online: Boolean(presence.online),
+                      lastSeen: presence.lastSeen || conversation.lastSeen,
+                    }
+                  : conversation,
+              ),
+            );
+          });
+          presenceSocket.on("userOnline", (phoneNumber) => {
+            setConversations((current) =>
+              current.map((conversation) =>
+                conversation.phone === phoneNumber
+                  ? { ...conversation, online: true }
+                  : conversation,
+              ),
+            );
+          });
+          presenceSocket.on("userOffline", (phoneNumber) => {
+            setConversations((current) =>
+              current.map((conversation) =>
+                conversation.phone === phoneNumber
+                  ? { ...conversation, online: false }
+                  : conversation,
+              ),
+            );
+          });
+        } catch (error) {
+          console.warn("Could not connect to live presence:", error.message);
+        }
+      };
+
+      connectPresence();
+      return () => {
+        cancelled = true;
+        presenceSocket?.disconnect();
+      };
     }, []),
   );
 
@@ -86,6 +160,14 @@ export default function Conversations() {
 
               <View style={{ flex: 1 }}>
                 <Text style={styles.name}>{item.name || item.phone}</Text>
+                <Text
+                  style={[
+                    styles.presence,
+                    item.online && styles.onlinePresence,
+                  ]}
+                >
+                  {formatPresence(item, now)}
+                </Text>
                 <Text style={styles.lastMessage} numberOfLines={1}>
                   {item.lastMessage ||
                     (item.lastMessageHasFile
@@ -125,6 +207,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#ddd",
   },
   name: { fontSize: 16, fontWeight: "bold" },
+  presence: { color: "#777", marginTop: 2, fontSize: 12 },
+  onlinePresence: { color: "#168545" },
   lastMessage: { color: "#666", marginTop: 4, fontSize: 13 },
   badge: {
     backgroundColor: "red",

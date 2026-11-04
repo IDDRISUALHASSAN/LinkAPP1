@@ -38,15 +38,58 @@ import {
   FileText,
 } from "lucide-react-native";
 import { setActiveNotificationChat } from "../../services/notifications";
-import { clearAuth, isAuthError } from "../../services/api";
+import { apiRequest, clearAuth, isAuthError } from "../../services/api";
 import {
   getCloudinaryAttachmentUrl,
   getPlayableVideoUrl,
   isSignedCloudinaryUrl,
 } from "../../services/media";
 import { downloadMessageFile } from "../../services/videos";
+import {
+  formatLastSeen,
+  usePresenceClock,
+} from "../../services/presence";
 
 const { width, height } = Dimensions.get("window");
+
+const dedupeMessages = (items) => {
+  const uniqueMessages = [];
+  const indexesById = new Map();
+
+  for (const item of items) {
+    const id = item?._id ? String(item._id) : null;
+    if (!id || !indexesById.has(id)) {
+      if (id) indexesById.set(id, uniqueMessages.length);
+      uniqueMessages.push(item);
+      continue;
+    }
+
+    const existingIndex = indexesById.get(id);
+    uniqueMessages[existingIndex] = {
+      ...uniqueMessages[existingIndex],
+      ...item,
+    };
+  }
+
+  return uniqueMessages;
+};
+
+const upsertMessage = (items, incoming) => {
+  if (!incoming?._id) return [...items, incoming];
+
+  const uniqueMessages = dedupeMessages(items);
+  const id = String(incoming._id);
+  const existingIndex = uniqueMessages.findIndex(
+    (item) => String(item?._id) === id,
+  );
+  if (existingIndex < 0) return [...uniqueMessages, incoming];
+
+  uniqueMessages[existingIndex] = {
+    ...uniqueMessages[existingIndex],
+    ...incoming,
+  };
+  return uniqueMessages;
+};
 
 function AudioAttachmentPlayer({ uri }) {
   const player = useAudioPlayer(uri);
@@ -494,9 +537,15 @@ export default function Chat() {
   const API_URL = Constants.expoConfig.extra.API_URL;
 
   const socketRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const now = usePresenceClock();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [userId, setUserId] = useState(null);
+  const [receiverOnline, setReceiverOnline] = useState(false);
+  const [receiverLastSeen, setReceiverLastSeen] = useState(null);
+  const [presenceLoaded, setPresenceLoaded] = useState(false);
+  const [receiverTyping, setReceiverTyping] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
   const [previewMeta, setPreviewMeta] = useState(null);
@@ -655,7 +704,7 @@ export default function Chat() {
 
       if (data.success) {
         socketRef.current?.emit("message", data.message);
-        setMessages((prev) => [...prev, data.message]);
+        setMessages((prev) => upsertMessage(prev, data.message));
         setPreviewFile(null);
         setPreviewMeta(null);
       } else {
@@ -687,6 +736,33 @@ export default function Chat() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    if (!receiverId) return undefined;
+
+    fetch(`${API_URL}/user-info/${encodeURIComponent(receiverId)}`)
+      .then((response) => {
+        if (!response.ok) throw new Error(`Presence request failed (${response.status})`);
+        return response.json();
+      })
+      .then((data) => {
+        if (!active || !data.success) return;
+        setReceiverOnline(Boolean(data.user.online));
+        setReceiverLastSeen(data.user.lastSeen || null);
+        setPresenceLoaded(true);
+      })
+      .catch((error) => {
+        if (active) {
+          console.warn("Could not load user presence:", error.message);
+          setPresenceLoaded(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [API_URL, receiverId]);
+
+  useEffect(() => {
     if (!userId || !receiverId) return;
     setActiveNotificationChat(receiverId);
     const newSocket = io(`${API_URL}`, { transports: ["websocket"] });
@@ -713,21 +789,51 @@ export default function Chat() {
       sendPresence(AppState.currentState === "active");
     });
 
+    const updatePresence = ({ phoneNumber, online, lastSeen }) => {
+      if (String(phoneNumber) !== String(receiverId)) return;
+      setReceiverOnline(Boolean(online));
+      setReceiverLastSeen(lastSeen || null);
+      setPresenceLoaded(true);
+    };
+
+    newSocket.on("presenceUpdate", updatePresence);
+    newSocket.on("userOnline", (phoneNumber) => {
+      if (String(phoneNumber) === String(receiverId)) {
+        setReceiverOnline(true);
+        setPresenceLoaded(true);
+      }
+    });
+    newSocket.on("userOffline", (phoneNumber) => {
+      if (String(phoneNumber) === String(receiverId)) {
+        setReceiverOnline(false);
+        setPresenceLoaded(true);
+      }
+    });
+    newSocket.on("typing", ({ from, isTyping }) => {
+      if (String(from) === String(receiverId)) {
+        setReceiverTyping(Boolean(isTyping));
+      }
+    });
+    newSocket.on("stopTyping", ({ from }) => {
+      if (String(from) === String(receiverId)) setReceiverTyping(false);
+    });
+
     newSocket.on("history", (history) => {
-      setMessages(history || []);
+      setMessages(dedupeMessages(Array.isArray(history) ? history : []));
       setTimeout(
         () => flatListRef.current?.scrollToEnd({ animated: false }),
         100,
       );
-      fetch(`${API_URL}/messages/mark-read`, {
+      apiRequest("/messages/mark-read", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ from: receiverId, to: userId }),
+      }).catch((error) => {
+        console.warn("Could not mark messages as read:", error.message);
       });
     });
 
     newSocket.on("message", (msg) => {
-      setMessages((prev) => [...prev, msg]);
+      setMessages((prev) => upsertMessage(prev, msg));
       setTimeout(
         () => flatListRef.current?.scrollToEnd({ animated: true }),
         100,
@@ -736,10 +842,12 @@ export default function Chat() {
 
     newSocket.on("messageSent", (msg) => {
       setMessages((prev) =>
-        prev.map((m) =>
-          m.timestamp === msg.timestamp && m.from === msg.from
-            ? { ...m, ...msg }
-            : m,
+        dedupeMessages(
+          prev.map((m) =>
+            m.timestamp === msg.timestamp && m.from === msg.from
+              ? { ...m, ...msg }
+              : m,
+          ),
         ),
       );
     });
@@ -788,6 +896,8 @@ export default function Chat() {
     );
 
     return () => {
+      clearTimeout(typingTimeoutRef.current);
+      newSocket.emit("stopTyping", { from: userId, to: receiverId });
       newSocket.emit("leaveChat", { phoneNumber: userId });
       setActiveNotificationChat(null);
       appStateListener.remove();
@@ -827,6 +937,8 @@ export default function Chat() {
 
   const sendMessage = () => {
     if (!input.trim() || !socketRef.current || !userId) return;
+    clearTimeout(typingTimeoutRef.current);
+    socketRef.current.emit("stopTyping", { from: userId, to: receiverId });
     const msg = {
       from: userId,
       to: receiverId,
@@ -834,8 +946,31 @@ export default function Chat() {
       timestamp: new Date().toISOString(),
     };
     socketRef.current.emit("message", msg);
-    setMessages((prev) => [...prev, msg]);
+    setMessages((prev) => upsertMessage(prev, msg));
     setInput("");
+  };
+
+  const handleInputChange = (text) => {
+    setInput(text);
+    if (!socketRef.current?.connected || !userId) return;
+
+    if (text.trim()) {
+      socketRef.current.emit("typing", {
+        from: userId,
+        to: receiverId,
+        isTyping: true,
+      });
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        socketRef.current?.emit("stopTyping", {
+          from: userId,
+          to: receiverId,
+        });
+      }, 1500);
+    } else {
+      clearTimeout(typingTimeoutRef.current);
+      socketRef.current.emit("stopTyping", { from: userId, to: receiverId });
+    }
   };
 
   const handleLike = (item) => {
@@ -1088,7 +1223,15 @@ export default function Chat() {
               }}
             >
               <Text style={styles.receiverName}>{receiverName || "User"}</Text>
-              <Text style={styles.receiverStatus}>Online</Text>
+              <Text style={styles.receiverStatus}>
+                {receiverTyping
+                  ? "Typing..."
+                  : receiverOnline
+                    ? "Online"
+                    : presenceLoaded
+                      ? `Last seen ${formatLastSeen(receiverLastSeen, now)}`
+                      : "Checking status..."}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1096,7 +1239,9 @@ export default function Chat() {
         <FlatList
           ref={flatListRef}
           data={messages}
-          keyExtractor={(item, i) => item?._id || i.toString()}
+          keyExtractor={(item, i) =>
+            item?._id ? String(item._id) : `message-${i}`
+          }
           renderItem={({ item }) => (
             <AnimatedMessage item={item} isMine={item.from === userId} />
           )}
@@ -1153,7 +1298,7 @@ export default function Chat() {
           <TextInput
             style={styles.textInput}
             value={input}
-            onChangeText={setInput}
+            onChangeText={handleInputChange}
             placeholder="Type a message..."
             placeholderTextColor="#999"
             multiline

@@ -10,6 +10,10 @@ import {
   Dimensions,
 } from "react-native";
 import { useLocalSearchParams } from "expo-router";
+import {
+  formatLastSeen,
+  usePresenceClock,
+} from "../../services/presence";
 
 const { width, height } = Dimensions.get("window");
 
@@ -18,6 +22,8 @@ export default function UserProfileScreen() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isFullView, setIsFullView] = useState(false);
+  const [presence, setPresence] = useState({ online: false, lastSeen: null });
+  const now = usePresenceClock();
   const scaleAnim = useMemo(() => new Animated.Value(1), []);
   const fadeAnim = useMemo(() => new Animated.Value(0), []);
   const lastTap = useRef(null);
@@ -29,7 +35,13 @@ export default function UserProfileScreen() {
     fetch(`${API_URL}/user-info/${phone}`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.success) setUser(data.user);
+        if (data.success) {
+          setUser(data.user);
+          setPresence({
+            online: Boolean(data.user.online),
+            lastSeen: data.user.lastSeen || null,
+          });
+        }
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -100,6 +112,13 @@ export default function UserProfileScreen() {
 
       <Text style={styles.name}>{user.name}</Text>
       <Text style={styles.phone}>{user.PhoneNumber}</Text>
+      <Text style={styles.presence}>
+        {presence.online
+          ? "Online"
+          : presence.lastSeen
+            ? `Last seen ${formatLastSeen(presence.lastSeen, now)}`
+            : "Offline"}
+      </Text>
 
       {/* Full-screen Image Overlay */}
       {isFullView && (
@@ -155,6 +174,11 @@ const styles = StyleSheet.create({
     fontSize: 17,
     color: "#666",
     marginTop: 5,
+  },
+  presence: {
+    fontSize: 14,
+    color: "#666",
+    marginTop: 8,
   },
   overlay: {
     position: "absolute",
